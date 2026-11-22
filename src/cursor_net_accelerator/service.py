@@ -307,22 +307,36 @@ class AcceleratorService:
         import uvicorn
 
         app = create_app(self)
-        config = uvicorn.Config(
-            app,
-            host=self.settings.web_bind,
-            port=self.settings.web_port,
-            log_level="warning",
-        )
-        server = uvicorn.Server(config)
-        self._web_server = server
 
         def _run() -> None:
-            log.info(
-                "status UI http://%s:%s/",
-                self.settings.web_bind,
-                self.settings.web_port,
-            )
-            server.run()
+            # 无缝重启时，状态页端口会先被旧进程占着一小会儿。
+            # 这里等它退出再绑，避免「新进程起来了但页面没了」。
+            deadline = time.time() + 30.0
+            while time.time() < deadline and not self._stop.is_set():
+                server = uvicorn.Server(
+                    uvicorn.Config(
+                        app,
+                        host=self.settings.web_bind,
+                        port=self.settings.web_port,
+                        log_level="warning",
+                    )
+                )
+                self._web_server = server
+                try:
+                    log.info(
+                        "status UI http://%s:%s/",
+                        self.settings.web_bind,
+                        self.settings.web_port,
+                    )
+                    server.run()
+                    return
+                except SystemExit:
+                    log.warning(
+                        "状态页端口 %s 被占用，等旧进程退出后重试", self.settings.web_port
+                    )
+                except OSError as exc:  # noqa: BLE001
+                    log.warning("状态页绑定失败：%s（重试中）", exc)
+                time.sleep(0.5)
 
         t = threading.Thread(target=_run, name="web", daemon=True)
         t.start()

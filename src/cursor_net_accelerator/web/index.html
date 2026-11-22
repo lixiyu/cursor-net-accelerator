@@ -106,6 +106,14 @@
     main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
     h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.02em; }
     .sub { color: var(--muted); margin-bottom: 24px; }
+    .h2-note {
+      font-size: 0.8rem;
+      font-weight: 400;
+      color: var(--muted);
+      margin-left: 10px;
+      letter-spacing: 0;
+      vertical-align: 1px;
+    }
     .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
     .pill {
       background: var(--card);
@@ -280,8 +288,7 @@
   <div class="row" id="paths"></div>
 
   <section id="mode-section">
-    <h2>选路模式</h2>
-    <p class="note" id="mode-note">开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果。</p>
+    <h2>选路模式 <span class="h2-note" id="mode-note">开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果。</span></h2>
     <div class="row" style="margin-bottom:0">
       <button id="mode-good" data-mode="good" title="只返回探测健康的 IP">开启加速</button>
       <button class="secondary" id="mode-off" data-mode="off" title="不做筛选，原样返回上游解析结果">关闭加速</button>

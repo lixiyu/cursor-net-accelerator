@@ -44,16 +44,47 @@ class ConnectProxy:
         self._stop = threading.Event()
 
     def start(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((self.bind, self.port))
-        sock.listen(128)
-        sock.settimeout(1.0)
-        self._sock = sock
         self._stop.clear()
-        self._thread = threading.Thread(target=self._accept_loop, name="connect-proxy", daemon=True)
+        self._thread = threading.Thread(
+            target=self._bind_and_serve, name="connect-proxy", daemon=True
+        )
         self._thread.start()
-        log.info("CONNECT proxy on %s:%s", self.bind, self.port)
+
+    def _bind_and_serve(self) -> None:
+        """绑定并在后台服务。
+
+        无缝重启时旧进程还占着端口，这里重试最多 30 秒等它退出，
+        避免「新进程因为代理端口冲突直接启动失败」。
+        """
+        deadline = time.time() + 30.0
+        last_err: Exception | None = None
+        while not self._stop.is_set() and time.time() < deadline:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+            try:
+                sock.bind((self.bind, self.port))
+            except OSError as exc:
+                last_err = exc
+                sock.close()
+                time.sleep(0.5)
+                continue
+            sock.listen(128)
+            sock.settimeout(1.0)
+            self._sock = sock
+            log.info("CONNECT proxy on %s:%s", self.bind, self.port)
+            self._accept_loop()
+            return
+        if not self._stop.is_set():
+            log.warning(
+                "CONNECT proxy 未能绑定 %s:%s（%s），本次不提供代理",
+                self.bind,
+                self.port,
+                last_err,
+            )
 
     def stop(self) -> None:
         self._stop.set()
