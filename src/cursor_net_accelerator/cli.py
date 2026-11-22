@@ -17,6 +17,7 @@ from .connect_proxy import generate_pac
 from .paths import data_dir
 from .resolver_macos import disable as resolver_disable
 from .resolver_macos import enable as resolver_enable
+from .resolver_macos import neutralize as resolver_neutralize
 from .resolver_macos import status as resolver_status
 from .service import AcceleratorService
 
@@ -177,6 +178,47 @@ def cmd_disable_dns(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stop(_: argparse.Namespace) -> int:
+    """停用加速器：结束进程，并把 cursor.sh 分域解析交回系统 DNS。
+
+    不动系统代理 / Clash。暂时不用加速器时跑这一条即可。
+    """
+    settings = Settings.from_env()
+    me = os.getpid()
+    pids = [pid for pid in _running_run_pids() if pid != me]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    # 等旧进程自己在 stop() 里释放；超时再强杀
+    deadline = time.time() + 5.0
+    while time.time() < deadline and _running_run_pids():
+        time.sleep(0.2)
+    for pid in [p for p in _running_run_pids() if p != me]:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    # 再兜底写一次（进程已挂、或从未跑过时也要把规则放开）
+    released = resolver_neutralize(settings)
+    st = resolver_status(settings)
+    if released or st.get("neutralized") or not st.get("installed"):
+        print("已停止加速器；cursor.sh 已交回系统 DNS。Clash / 系统代理未改动。")
+        if st.get("installed") and st.get("neutralized"):
+            print(f"分域文件仍在但已停用: {st.get('path')}（彻底删除可再跑 disable-dns）")
+        return 0
+
+    print(
+        "进程已停，但无法改写 /etc/resolver（可能仍属 root）。\n"
+        "请执行一次：cursor-net-accelerator enable-dns（会 chown 给当前用户），\n"
+        "或：cursor-net-accelerator disable-dns（直接删掉分域文件）。",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_pac(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     text = generate_pac(settings.hosts, settings.proxy_bind, settings.proxy_port)
@@ -231,6 +273,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_dis = sub.add_parser("disable-dns", help="移除 macOS /etc/resolver 配置")
     p_dis.set_defaults(func=cmd_disable_dns)
+
+    p_stop = sub.add_parser(
+        "stop",
+        help="停用：结束加速器进程，并把 cursor.sh 交回系统 DNS（不动 Clash）",
+    )
+    p_stop.set_defaults(func=cmd_stop)
 
     # 保留 CLI 入口，但不在公开 README 推广
     p_pac = sub.add_parser("pac", help=argparse.SUPPRESS)

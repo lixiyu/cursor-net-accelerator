@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -18,6 +19,8 @@ from .paths import config_path
 from .peer_watch import PeerWatcher
 from .pool import IpPool
 from .probe import probe_host
+from .resolver_macos import activate as resolver_activate
+from .resolver_macos import neutralize as resolver_neutralize
 from .resolver_macos import status as resolver_status
 
 log = logging.getLogger(__name__)
@@ -283,7 +286,13 @@ class AcceleratorService:
 
     def start(self) -> None:
         self._stop.clear()
+        # 先认领 pid 文件：无缝重启时新进程会覆盖它，
+        # 旧进程退出时据此判断「我不是最后一个」，从而不去释放 DNS。
+        self._claim_pid_file()
         self.dns.start()
+        # 运行期间确保分域规则指向本机加速器（文件属主是用户时才写得动）
+        if not resolver_activate(self.settings):
+            log.debug("resolver file not user-writable; 保持现状")
         if self.proxy is not None:
             self.proxy.start()
         if self.settings.web_enabled:
@@ -341,7 +350,45 @@ class AcceleratorService:
         t = threading.Thread(target=_run, name="web", daemon=True)
         t.start()
 
+    def _pid_file(self):  # noqa: ANN202
+        from .paths import state_dir
+
+        return state_dir() / "run.pid"
+
+    def _claim_pid_file(self) -> None:
+        """认领 pid 文件：无缝重启时新进程覆盖它，旧进程据此判断谁在服务。"""
+        try:
+            path = self._pid_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _owns_pid_file(self) -> bool:
+        try:
+            return self._pid_file().read_text(encoding="utf-8").strip() == str(os.getpid())
+        except OSError:
+            return False
+
+    def _release_pid_file(self) -> None:
+        try:
+            self._pid_file().unlink()
+        except OSError:
+            pass
+
     def stop(self) -> None:
+        # 退出即释放：把 cursor.sh 的分域规则改回系统 DNS。
+        # 仅在「我是最后一个实例」时做，避免无缝重启时把新进程的路由掐掉。
+        if self._owns_pid_file():
+            if resolver_neutralize(self.settings):
+                log.info("已释放 cursor.sh 分域解析（改回系统 DNS）")
+            else:
+                log.warning(
+                    "无法自动释放分域解析（/etc/resolver/%s 仍属 root）；"
+                    "执行一次 sudo cursor-net-accelerator enable-dns 后即可自动管理",
+                    self.settings.resolver_domain,
+                )
+            self._release_pid_file()
         self._stop.set()
         self._activity_event.set()
         if self._web_server is not None:
