@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cursor 网络加速器 · 状态</title>
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #e7e5e4;
+      /* 三色同一分量：绿少黄、红少粉、黄少土，浅缝衬出来 */
+      --ok: #3cba6c;
+      --bad: #e25c5c;
+      --mixed: #f0be4a;
+      --card: #fffefb;
+      --accent: #0f766e;
+      --ok-text: #166534;
+      --bad-text: #991b1b;
+      --strip-track: #efece6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #d9f3ef 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #fde68a55 0%, transparent 50%),
+        var(--bg);
+      min-height: 100vh;
+      transition: background 0.2s ease;
+    }
+    /* 拉闸中：整页危险红，醒目提醒赶紧测完切回 */
+    body.mode-bad {
+      background:
+        radial-gradient(1000px 500px at 20% -10%, #fecaca 0%, transparent 50%),
+        radial-gradient(900px 600px at 100% 0%, #f8717188 0%, transparent 55%),
+        #7f1d1d;
+      color: #fef2f2;
+    }
+    body.mode-bad .sub,
+    body.mode-bad .muted,
+    body.mode-bad .note,
+    body.mode-bad .strip-label,
+    body.mode-bad th,
+    body.mode-bad .legend {
+      color: #fecaca;
+    }
+    body.mode-bad section {
+      background: #450a0aee;
+      border-color: #991b1b;
+    }
+    body.mode-bad section h2 {
+      color: #fecaca;
+    }
+    body.mode-bad .pill {
+      background: #7f1d1d;
+      border-color: #f87171;
+      color: #fef2f2;
+    }
+    body.mode-bad .pill.pill-warn {
+      background: #991b1b;
+      border-color: #fca5a5;
+      color: #fff;
+    }
+    body.mode-bad table {
+      color: #fef2f2;
+    }
+    body.mode-bad td {
+      border-bottom-color: #7f1d1d;
+    }
+    .mode-alarm {
+      display: none;
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #dc2626;
+      color: #fff;
+      font-weight: 650;
+      line-height: 1.45;
+      border: 1px solid #fca5a5;
+      box-shadow: 0 8px 24px rgba(127, 29, 29, 0.45);
+    }
+    body.mode-bad .mode-alarm { display: block; }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
+    h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); margin-bottom: 24px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+    .pill {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 0.9rem;
+    }
+    .pill.pill-warn {
+      border-color: #f0c0c0;
+      color: var(--bad-text);
+      background: #fff7f7;
+    }
+    .pill.has-tip {
+      position: relative;
+      cursor: help;
+    }
+    .pill.has-tip::after {
+      content: attr(data-tip);
+      position: absolute;
+      left: 0;
+      top: calc(100% + 8px);
+      z-index: 20;
+      width: max(280px, 100%);
+      max-width: 420px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #292524;
+      color: #fafaf9;
+      font-size: 0.78rem;
+      font-weight: 400;
+      line-height: 1.45;
+      white-space: pre-line;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-2px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+    .pill.has-tip:hover::after,
+    .pill.has-tip:focus-visible::after {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    section h2 {
+      margin: 0 0 12px;
+      font-size: 1.05rem;
+      color: var(--accent);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .ok { color: var(--ok-text); font-weight: 600; }
+    .bad { color: var(--bad-text); font-weight: 600; }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.88rem; }
+    .muted { color: var(--muted); }
+    a#probe { color: var(--accent); text-decoration: none; }
+    a#probe:hover { text-decoration: underline; }
+    .warn { color: var(--bad-text); font-weight: 600; }
+    .note { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }
+    .ev { font-size: 0.85rem; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+    .ev .k { display: inline-block; min-width: 88px; color: var(--accent); font-weight: 600; }
+
+    /* 健康条：对齐 monitor 的观感，留在浅色页里 */
+    .health-block { margin-bottom: 18px; }
+    .health-block:last-child { margin-bottom: 0; }
+    .health-block h3 {
+      margin: 0 0 10px;
+      font-size: 0.92rem;
+      font-weight: 650;
+      color: var(--ink);
+    }
+    .strip-row {
+      display: grid;
+      grid-template-columns: 148px 1fr;
+      gap: 12px;
+      align-items: center;
+      margin: 7px 0;
+    }
+    .strip-label { font-size: 0.82rem; color: var(--muted); line-height: 1.3; }
+    .strip-row.strip-axis { margin-top: 2px; margin-bottom: 0; align-items: start; }
+    .time-axis {
+      position: relative;
+      height: 16px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-variant-numeric: tabular-nums;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    .time-axis span {
+      position: absolute;
+      top: 0;
+      white-space: nowrap;
+    }
+    .ip-strip {
+      display: flex;
+      gap: 1px;
+      align-items: stretch;
+      width: 100%;
+      height: 18px;
+      padding: 0;
+      overflow: hidden;
+      border-radius: 2px;
+      background: var(--strip-track);
+      box-sizing: border-box;
+      cursor: crosshair;
+    }
+    .ip-strip .seg {
+      flex: 1 0 0;
+      min-width: 0;
+      border-radius: 0;
+      background: var(--bad);
+    }
+    .ip-strip .seg.ok { background: var(--ok); }
+    .ip-strip .seg.mixed { background: var(--mixed); }
+    .ip-strip .seg.empty { background: transparent; }
+    .legend {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 12px;
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+    }
+    .log-grid {
+      display: grid;
+      grid-template-columns: minmax(240px, 0.9fr) minmax(320px, 1.3fr);
+      gap: 16px;
+      align-items: start; /* 不强制两列同高，避免矮的一侧底部大块留白 */
+      margin-bottom: 16px;
+    }
+    .log-grid > section {
+      margin-bottom: 0;
+      min-width: 0;
+      padding: 12px 14px;
+    }
+    .log-scroll {
+      max-height: 1000px;
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+    @media (max-width: 720px) {
+      .strip-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+    @media (max-width: 900px) {
+      .log-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Cursor 网络加速器</h1>
+  <p class="sub">本机运行状态 · DNS 与代理同时可用 · 对照 Cursor 连接与失败
+    <span class="muted" id="updated"></span>
+    · <a href="#" id="probe" class="muted">立刻探测</a>
+  </p>
+
+  <div class="row" id="paths"></div>
+  <p class="note muted" id="paths-hint" style="margin-top:-4px"></p>
+
+  <div class="row" id="meta"></div>
+
+  <section>
+    <h2>健康状态概览</h2>
+    <p class="note" id="health-hint">绿=健康 · 黄=有红有绿 · 红=不可达。只画有探测的时间格。服务重启后历史会清空。</p>
+    <div id="health"></div>
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>健康</span>
+      <span><i style="background:var(--mixed)"></i>有红有绿</span>
+      <span><i style="background:var(--bad)"></i>不可达</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>按 IP 汇总</h2>
+    <p class="note">域名几乎不变；是否有用，主要看 Cursor 是否连到探测判定为健康的 IP，以及失败是否仍扎堆在坏 IP 上。</p>
+    <table>
+      <thead>
+        <tr>
+          <th>IP</th>
+          <th>探测</th>
+          <th>DNS 下发</th>
+          <th>优选次数</th>
+          <th>Cursor 连上</th>
+          <th>域名</th>
+        </tr>
+      </thead>
+      <tbody id="by-ip"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>可用池（最近一轮探测）</h2>
+    <div id="pool"></div>
+  </section>
+
+  <div class="log-grid">
+    <section>
+      <h2>Cursor 传输日志</h2>
+      <div id="fails" class="log-scroll"></div>
+    </section>
+    <section>
+      <h2>最近事件</h2>
+      <div id="events" class="log-scroll"></div>
+    </section>
+  </div>
+</main>
+<script>
+// 健康概览只画主入口域名：多域名 × 多 IP 堆在一起反而看不清。
+// 想全看就把这个数组清空（[] 表示不过滤）。
+const HEALTH_HOSTS = ['api2.cursor.sh'];
+
+// 单飞：上一轮 /api/status 还没回来就跳过这一轮，避免慢响应时请求无限堆积
+let __loading = false;
+async function load() {
+  if (__loading) return;
+  __loading = true;
+  try {
+    await loadOnce();
+  } catch (err) {
+    console.error('加载状态失败', err);
+  } finally {
+    __loading = false;
+  }
+}
+
+async function loadOnce() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  const obs = data.observe || {};
+  const settings = data.settings || {};
+  const resolver = data.macos_resolver || {};
+
+  document.getElementById('updated').textContent =
+    ' · 已运行 ' + formatUptime(obs.uptime_s) + ' · 更新于 ' + new Date().toLocaleTimeString();
+
+  document.title = 'Cursor 网络加速器 · 状态';
+  const sched = data.probe_schedule || {};
+  const paths = data.paths || {};
+  const dnsPath = paths.dns || {};
+  const proxyPath = paths.proxy || {};
+  const pathsEl = document.getElementById('paths');
+  if (pathsEl) {
+    const dnsPill = pill('DNS', dnsPath.listen || settings.dns || '-');
+    const proxyPill = proxyPath.enabled
+      ? pill('代理', proxyPath.listen || settings.proxy || '-')
+      : pill('代理', '未启用');
+    pathsEl.innerHTML = dnsPill + proxyPill +
+      (proxyPath.pac_url ? `<div class="pill"><a href="${esc(proxyPath.pac_url)}">下载 PAC</a></div>` : '');
+  }
+  const pathsHint = document.getElementById('paths-hint');
+  if (pathsHint) {
+    const bits = [];
+    bits.push(resolver.installed ? '分域 DNS 已安装' : '分域 DNS 未安装（可 enable-dns）');
+    if (proxyPath.enabled) bits.push('CONNECT 已监听；指过来即走代理选路');
+    pathsHint.textContent = bits.join(' · ');
+  }
+
+  const dial = data.cursor_failures && data.cursor_failures.single_address_dial;
+  // hosts 只显示首个域名，其余放进 tooltip，避免药丸被撑成一大条
+  const hostList = settings.hosts || [];
+  const hostsPill = hostList.length
+    ? `<div class="pill has-tip" tabindex="0" data-tip="${tipAttr(
+        `加速域名（${hostList.length}）\n${hostList.join('\n')}`
+      )}"><strong>hosts</strong> · ${esc(hostList[0])}</div>`
+    : pill('hosts', '-');
+
+  const metaPills = [
+    hostsPill,
+    pill('resolver', resolver.installed ? '已安装' : '未安装'),
+    sched.current_interval_s != null
+      ? pill('探测节奏', (sched.idle ? '闲置 ' : '活跃 ') + sched.current_interval_s + 's')
+      : '',
+  ].filter(Boolean);
+  if (dial && dial.state) {
+    // Cursor single_address_dial=on → Happy Eyeballs / autoSelectFamily 被关（Cursor 侧，非加速器）
+    const forcedSingle = dial.enabled === true || dial.state === 'on';
+    const when = dial.ts ? fmtLogWall(dial.ts) : '';
+    const tipOff =
+      'Happy Eyeballs 是 Cursor 自己关的；Cursor 可以远程定点关掉客户端上的 Happy Eyeballs。\n' +
+      '本加速器的作用是帮它补上：通过本机 mini DNS，让 Happy Eyeballs 式选路仍能生效，缓解网络异常，减少 Cursor 失败与重试。' +
+      (when ? `\n配置下发时间：${when}` : '');
+    const tipOn =
+      'Happy Eyeballs 由 Cursor 自己管，也可远程定点关闭。当前日志显示为开。\n' +
+      '若被关掉，本加速器会通过本机 mini DNS 帮它补上选路，缓解网络异常，减少失败与重试。' +
+      (when ? `\n配置下发时间：${when}` : '');
+    if (forcedSingle) {
+      metaPills.push(
+        `<div class="pill pill-warn has-tip" tabindex="0" data-tip="${tipAttr(tipOff)}"><strong>Happy Eyeballs</strong> · 已关</div>`
+      );
+    } else {
+      metaPills.push(
+        `<div class="pill has-tip" tabindex="0" data-tip="${tipAttr(tipOn)}"><strong>Happy Eyeballs</strong> · 开</div>`
+      );
+    }
+  }
+  const ds = data.dns_stats || {};
+  if (ds.queries != null) {
+    metaPills.push(pill('DNS 查询', `${ds.queries} 次 · ${ds.queries_per_s ?? 0} q/s`));
+  }
+  if (ds.shed) {
+    metaPills.push(
+      `<div class="pill pill-warn has-tip" tabindex="0" data-tip="上游转发并发已封顶，超出的查询直接回 SERVFAIL。出现这个数字说明上游在变慢，但本机没被拖住。"><strong>转发限流</strong> · ${ds.shed} 次</div>`
+    );
+  }
+  if (ds.cache_hit) {
+    metaPills.push(pill('DNS 缓存命中', `${ds.cache_hit} 次`));
+  }
+  document.getElementById('meta').innerHTML = metaPills.join('');
+
+  renderHealth(data.health || {});
+
+  const tbody = document.getElementById('by-ip');
+  // 排序：先域名、再 IP（IP 补零成定宽，避免 10.0.0.10 排在 10.0.0.2 之前）
+  const ipKey = ip => String(ip || '').split('.')
+    .map(o => String(o).padStart(3, '0')).join('.');
+  const hostKey = r => ((r.hostnames || [])[0] || '\uffff');
+  const rows = (obs.by_ip || []).slice().sort((a, b) => {
+    const ha = hostKey(a), hb = hostKey(b);
+    if (ha !== hb) return ha < hb ? -1 : 1;
+    return ipKey(a.ip) < ipKey(b.ip) ? -1 : (ipKey(a.ip) > ipKey(b.ip) ? 1 : 0);
+  });
+  tbody.innerHTML = rows.length ? rows.map(r => `<tr>
+      <td class="mono">${esc(r.ip)}</td>
+      <td class="${r.last_probe_ok === true ? 'ok' : (r.last_probe_ok === false ? 'bad' : '')}">${
+        r.last_probe_ok == null ? '-' :
+        (r.last_probe_ok ? ('通 ' + (r.last_probe_ms != null ? Math.round(r.last_probe_ms) + 'ms' : '')) : '不通')
+      }</td>
+      <td>${r.dns_serve_count}</td>
+      <td>${r.dns_preferred_count}</td>
+      <td>${r.peer_seen_count}${r.last_peer_age_s != null ? ' <span class="muted">(' + r.last_peer_age_s + 's前)</span>' : ''}</td>
+      <td class="mono">${esc((r.hostnames || []).join(', '))}</td>
+    </tr>`).join('') : '<tr><td colspan="6" class="muted">暂无数据，等探测 / DNS / Cursor 连接采样</td></tr>';
+
+  const pool = data.pool || {};
+  document.getElementById('pool').innerHTML = Object.keys(pool).length
+    ? Object.entries(pool).map(([host, h]) => {
+        const healthy = (h.healthy || []).map(ip => `<span class="ok mono">${esc(ip)}</span>`).join(' · ') || '<span class="bad">无</span>';
+        const entries = (h.entries || []).map(e =>
+          `<div class="mono">${esc(e.ip)} · ${e.ok ? '<span class="ok">ok</span>' : '<span class="bad">fail</span>'}` +
+          `${e.connect_ms != null ? ' · ' + Math.round(e.connect_ms) + 'ms' : ''}` +
+          `${e.quarantined ? ' · 隔离' : ''}</div>`
+        ).join('');
+        return `<div style="margin-bottom:12px"><strong class="mono">${esc(host)}</strong><div>healthy: ${healthy}</div>${entries}</div>`;
+      }).join('')
+    : '<p class="muted">暂无探测结果</p>';
+
+  const fails = (data.cursor_failures && data.cursor_failures.events) || [];
+  document.getElementById('fails').innerHTML = fails.length
+    ? fails.slice(0, 30).map(f => `<div class="ev"><span class="k">${esc(fmtLocal(f.ts))}</span> ${esc(f.transport_failure_kind || f.error_name || 'fail')} <span class="muted">${esc(f.transport_mode || '')} ${esc(f.connect_code || '')}</span></div>`).join('')
+    : '<p class="muted">最近窗口内未读到传输失败（或日志目录不可用）</p>';
+
+  const events = obs.events || [];
+  document.getElementById('events').innerHTML = events.length
+    ? events.slice(0, 40).map(e => {
+        let detail = '';
+        if (e.kind === 'dns') {
+          const badges = (e.ips || []).map(ip => {
+            const isBad = (e.bad_in_answer || []).includes(ip);
+            return isBad
+              ? `<span class="warn mono">${esc(ip)}[坏]</span>`
+              : `<span class="ok mono">${esc(ip)}</span>`;
+          }).join(', ') || '<span class="bad">（空 / SERVFAIL）</span>';
+          const modeTag = e.mode ? `[${esc(e.mode)}]` : '';
+          const deg = e.degraded ? ' <span class="warn">降级</span>' : '';
+          detail = `${modeTag} ${esc(e.hostname)} → ${badges}${deg}` +
+            (e.note ? ` <span class="muted">· ${esc(e.note)}</span>` : '');
+        } else if (e.kind === 'routing_mode') {
+          detail = `${esc(e.from_mode)} → <strong>${esc(e.to_mode)}</strong> <span class="muted">${esc(e.note || '')}</span>`;
+        } else if (e.kind === 'probe') detail = `${esc(e.ip)} ${e.ok ? 'ok' : 'FAIL'} ${e.connect_ms != null ? Math.round(e.connect_ms) + 'ms' : ''}`;
+        else if (e.kind === 'peer') detail = `${esc(e.process)} → ${esc(e.ip)}`;
+        else if (e.kind === 'cursor_fail') detail = `${esc(e.transport_failure_kind || e.error_name || '')}`;
+        else detail = esc(JSON.stringify(e));
+        return `<div class="ev"><span class="k">${esc(e.kind)}</span> <span class="muted">${esc(fmtLocal(e.ts))}</span> ${detail}</div>`;
+      }).join('')
+    : '<p class="muted">暂无事件</p>';
+}
+
+function renderHealth(health) {
+  const el = document.getElementById('health');
+  const allHosts = health.hosts || {};
+  const picked = HEALTH_HOSTS.filter(h => allHosts[h]);
+  const keys = picked.length ? picked : Object.keys(allHosts);
+  if (!keys.length) {
+    el.innerHTML = `<p class="muted">${esc(health.note || '暂无探测历史，点「立刻探测」或等下一轮自动探测')}</p>`;
+    return;
+  }
+  const hint = [];
+  if (HEALTH_HOSTS.length && picked.length) hint.push(`只看 ${HEALTH_HOSTS.join(', ')}`);
+  const retain = health.retention_hours != null ? health.retention_hours : health.hours;
+  if (retain != null) hint.push(`保留近 ${retain}h`);
+  if (health.round_count != null) hint.push(`${health.round_count} 轮探测`);
+  if (health.slot_seconds != null) hint.push(`约 ${Math.round(health.slot_seconds)}s/格`);
+  document.getElementById('health-hint').textContent =
+    (hint.length ? hint.join(' · ') + '。' : '') +
+    '绿=健康 · 黄=有红有绿（加速效果按选路挑中的 IP；服务看全部 IP）· 红=不可达；单 IP 只有红绿。超时清 6h 前；探测史会落盘，重启可恢复。';
+
+  el.innerHTML = keys.map(host => {
+    const h = allHosts[host];
+    const ipRows = (h.ips || []).map(ip => stripRow(ip.ip, ip.slot_segments)).join('');
+    return `<div class="health-block">
+      <h3 class="mono">${esc(host)}</h3>
+      ${stripRow('加速效果', h.accelerated && h.accelerated.slot_segments)}
+      ${stripRow('服务可达性', h.service && h.service.slot_segments)}
+      ${ipRows}
+      ${renderTimeAxis(health.from, health.to)}
+    </div>`;
+  }).join('');
+}
+
+function stripRow(label, segments) {
+  return `<div class="strip-row">
+    <div class="strip-label mono">${esc(label)}</div>
+    <div class="ip-strip">${renderStrip(segments)}</div>
+  </div>`;
+}
+
+function renderTimeAxis(fromIso, toIso) {
+  const t0 = new Date(fromIso).getTime();
+  const t1 = new Date(toIso).getTime();
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) return '';
+  const spanMs = t1 - t0;
+  const tickCount = spanMs >= 3 * 3600 * 1000 ? 5 : 4;
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmtTick = (ts) => {
+    const d = new Date(ts);
+    if (spanMs < 3600 * 1000) {
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const marks = [];
+  for (let i = 0; i < tickCount; i++) {
+    const p = i / (tickCount - 1);
+    const shift = i === 0 ? '0' : (i === tickCount - 1 ? '-100%' : '-50%');
+    marks.push(
+      `<span style="left:${(p * 100).toFixed(2)}%;transform:translateX(${shift})">${fmtTick(t0 + spanMs * p)}</span>`
+    );
+  }
+  return `<div class="strip-row strip-axis">
+    <div class="strip-label"></div>
+    <div class="time-axis">${marks.join('')}</div>
+  </div>`;
+}
+
+function fmtLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') || iso.includes('Z') || iso.includes('+')
+    ? iso
+    : iso.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return String(iso);
+  // 浏览器本地时区（如东八区）
+  return d.toLocaleString(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
+/** Cursor 日志墙钟时间（已是本机时区），勿再当 UTC 解析 */
+function fmtLogWall(s) {
+  const m = String(s || '').match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return fmtLocal(s);
+  return `${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+}
+
+/** 同色邻格最多并多少齿；太大成色带，太碎像马赛克 */
+const STRIP_MAX_MERGE = 4;
+/** 单条色带的单元数上限：payload 异常时也不至于把主线程拖死 */
+const STRIP_MAX_UNITS = 4000;
+
+function renderStrip(segments) {
+  if (!segments || !segments.length) return '<span class="muted" style="padding:4px 8px">无</span>';
+  const units = [];
+  for (const seg of segments) {
+    const n = Math.max(1, Math.min(Number(seg.count) || 1, STRIP_MAX_UNITS - units.length));
+    for (let i = 0; i < n; i++) units.push(seg);
+    if (units.length >= STRIP_MAX_UNITS) break;
+  }
+  const parts = [];
+  for (const u of units) {
+    const last = parts[parts.length - 1];
+    if (last && last.state === (u.state || 'empty') && last.count < STRIP_MAX_MERGE) {
+      last.count += 1;
+      last.end = u.end;
+      if (u.ok != null) last.ok = (last.ok || 0) + (u.ok || 0);
+      if (u.fail != null) last.fail = (last.fail || 0) + (u.fail || 0);
+    } else {
+      parts.push({
+        state: u.state || 'empty',
+        label: u.label || u.state,
+        count: 1,
+        start: u.start,
+        end: u.end,
+        ok: u.ok,
+        fail: u.fail,
+      });
+    }
+  }
+  return parts.map(seg => {
+    const title = `${fmtLocal(seg.start)} → ${fmtLocal(seg.end)} · ${seg.label || seg.state}` +
+      (seg.ok != null || seg.fail != null ? ` · ok ${seg.ok || 0} / fail ${seg.fail || 0}` : '');
+    return `<div class="seg ${esc(seg.state)}" style="flex-grow:${seg.count};flex-shrink:0;flex-basis:0" title="${esc(title)}"></div>`;
+  }).join('');
+}
+
+function formatUptime(sec) {
+  if (sec == null || Number.isNaN(Number(sec))) return '-';
+  let s = Math.max(0, Math.floor(Number(sec)));
+  const h = Math.floor(s / 3600);
+  s %= 3600;
+  const m = Math.floor(s / 60);
+  s %= 60;
+  if (h > 0) return h + ' 小时 ' + m + ' 分';
+  if (m > 0) return m + ' 分 ' + s + ' 秒';
+  return s + ' 秒';
+}
+/** 把多行文本塞进 data-tip（CSS 用 white-space: pre-line 还原换行） */
+function tipAttr(s) {
+  return esc(s).replace(/\n/g, '&#10;');
+}
+function pill(k, v) {
+  return `<div class="pill"><strong>${esc(k)}</strong> · ${esc(String(v ?? '-'))}</div>`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.getElementById('probe').onclick = async (ev) => {
+  ev.preventDefault();
+  const el = document.getElementById('probe');
+  const prev = el.textContent;
+  el.textContent = '探测中…';
+  try {
+    await fetch('/api/probe-now', { method: 'POST' });
+    await load();
+  } finally {
+    el.textContent = prev;
+  }
+};
+load();
+// 页面在后台时不必继续轮询；回到前台再补一次
+setInterval(() => { if (!document.hidden) load(); }, 8000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>

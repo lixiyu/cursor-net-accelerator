@@ -1,0 +1,26 @@
+[project]
+name = "cursor-net-accelerator"
+version = "0.1.0"
+description = "Cursor 网络加速器（本机）：探测入口 IP、排除坏点，让本机优先连到可用地址"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "xiyu" }]
+dependencies = [
+  "dnslib>=0.9.24",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+]
+
+[project.scripts]
+cursor-net-accelerator = "cursor_net_accelerator.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cursor_net_accelerator = ["web/*"]
