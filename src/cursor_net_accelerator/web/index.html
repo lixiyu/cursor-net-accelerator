@@ -84,6 +84,25 @@
       box-shadow: 0 8px 24px rgba(127, 29, 29, 0.45);
     }
     body.mode-bad .mode-alarm { display: block; }
+    button {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-size: 0.88rem;
+      font-weight: 600;
+      padding: 7px 16px;
+      cursor: pointer;
+      transition: filter 0.15s ease, transform 0.05s ease;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:active { transform: translateY(1px); }
+    button.secondary { background: #292524; }
+    button.danger { background: #dc2626; }
+    button.active { box-shadow: 0 0 0 3px #ffffffcc, 0 0 0 5px currentColor; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
     main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
     h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.02em; }
     .sub { color: var(--muted); margin-bottom: 24px; }
@@ -260,6 +279,17 @@
 
   <div class="row" id="paths"></div>
 
+  <section id="mode-section">
+    <h2>选路模式</h2>
+    <p class="note" id="mode-note">开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果。</p>
+    <div class="row" style="margin-bottom:0">
+      <button id="mode-good" data-mode="good" title="只返回探测健康的 IP">开启加速</button>
+      <button class="secondary" id="mode-off" data-mode="off" title="不做筛选，原样返回上游解析结果">关闭加速</button>
+      <button class="danger" id="mode-bad" data-mode="bad" hidden
+              title="故意不返回任何 IP，用来验证加速器是否真的在生效。测完请切回「开启加速」">拉闸测试</button>
+    </div>
+  </section>
+
   <div class="row" id="meta"></div>
 
   <section>
@@ -337,6 +367,30 @@ async function loadOnce() {
     ' · 已运行 ' + formatUptime(obs.uptime_s) + ' · 更新于 ' + new Date().toLocaleTimeString();
 
   document.title = 'Cursor 网络加速器 · 状态';
+
+  // 选路模式：拉闸按钮由 config.toml 的 gate_test_enabled 控制，
+  // 关掉时只隐藏「拉闸测试」这一个按钮，另外两个始终可见。
+  const mode = data.routing_mode || 'good';
+  const gateOn = data.gate_test_enabled === true;
+  document.body.classList.toggle('mode-bad', mode === 'bad');
+  ['good', 'off', 'bad'].forEach(m => {
+    const btn = document.getElementById('mode-' + m);
+    if (!btn) return;
+    btn.hidden = (m === 'bad' && !gateOn);
+    btn.classList.toggle('active', mode === m);
+    btn.onclick = () => {
+      if (m === 'bad' && !confirm(
+        '拉闸后 DNS 不返回任何 IP，Cursor 会立刻连不上（这是预期效果）。\n\n测完务必切回「开启加速」。继续？'
+      )) return;
+      setMode(m);
+    };
+  });
+  const modeNote = document.getElementById('mode-note');
+  if (modeNote) {
+    modeNote.textContent = gateOn
+      ? '开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果；拉闸测试：故意不返回任何 IP。'
+      : '开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果。';
+  }
   const sched = data.probe_schedule || {};
   const paths = data.paths || {};
   const dnsPath = paths.dns || {};
@@ -617,6 +671,21 @@ function formatUptime(sec) {
 function tipAttr(s) {
   return esc(s).replace(/\n/g, '&#10;');
 }
+async function setMode(mode) {
+  try {
+    const res = await fetch('/api/routing-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const body = await res.json();
+    if (body && body.ok === false) console.warn('切换失败：', body.error);
+  } catch (err) {
+    console.error('切换模式失败', err);
+  }
+  return load();
+}
+
 function pill(k, v) {
   return `<div class="pill"><strong>${esc(k)}</strong> · ${esc(String(v ?? '-'))}</div>`;
 }
