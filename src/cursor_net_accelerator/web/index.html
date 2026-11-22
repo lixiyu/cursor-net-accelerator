@@ -259,7 +259,6 @@
   </p>
 
   <div class="row" id="paths"></div>
-  <p class="note muted" id="paths-hint" style="margin-top:-4px"></p>
 
   <div class="row" id="meta"></div>
 
@@ -350,13 +349,6 @@ async function loadOnce() {
       : pill('代理', '未启用');
     pathsEl.innerHTML = dnsPill + proxyPill +
       (proxyPath.pac_url ? `<div class="pill"><a href="${esc(proxyPath.pac_url)}">下载 PAC</a></div>` : '');
-  }
-  const pathsHint = document.getElementById('paths-hint');
-  if (pathsHint) {
-    const bits = [];
-    bits.push(resolver.installed ? '分域 DNS 已安装' : '分域 DNS 未安装（可 enable-dns）');
-    if (proxyPath.enabled) bits.push('CONNECT 已监听；指过来即走代理选路');
-    pathsHint.textContent = bits.join(' · ');
   }
 
   const dial = data.cursor_failures && data.cursor_failures.single_address_dial;
