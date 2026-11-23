@@ -9,11 +9,11 @@ Cursor 突然发不出消息、一直转圈、失败了又重试——常见原�
 
 其实业界早就有一套成熟做法，叫 **Happy Eyeballs**：当域名解析出多个 IP 时，客户端会短间隔去试这些地址，尽快找出当前能连通、建连更快的那个，再把后续请求发过去，避免卡在一条坏地址上干等。
 
-这条思路大约在 **2011** 年前后成形（IETF 草案里开始叫 Happy Eyeballs），**Google Chrome** 约在 **2011 年 5 月**（Chrome 11）就已落地；**2012 年 4 月** 正式写成 [RFC 6555](https://www.rfc-editor.org/rfc/rfc6555)，**2017 年** 又有加强版 [RFC 8305](https://www.rfc-editor.org/rfc/rfc8305)。**Node.js** 则晚一些：[`autoSelectFamily`](https://nodejs.org/docs/latest/api/net.html#socketconnectoptions-connectlistener) 于 **2022 年 12 月 14 日**随 Node.js **19.3.0** 进入 `net.connect`，**2023 年 1 月 5 日**回落到 LTS **18.13.0**，到 **2023 年 4 月 17 日**的 Node.js **20.0.0** 起默认开启。
+这条思路大约在 **2011** 年前后成形（IETF 草案里开始叫 Happy Eyeballs），**Google Chrome** 约在 **2011 年 5 月**（Chrome 11）就已落地；**2012 年 4 月** 正式写成 [RFC 6555](https://www.rfc-editor.org/rfc/rfc6555)。**Node.js** 的 [`autoSelectFamily`](https://nodejs.org/docs/latest/api/net.html#socketconnectoptions-connectlistener) 于 **2022** 年进入 `net.connect`，**2023 年 4 月**起默认开启。
 
 Cursor 的对话 / 推理相关能力同样跑在 Node.js 上，但他们在 Agent 对话的传输路径上加了**远程门控**：可以在后台远程关掉部分用户本机客户端的 `autoSelectFamily`，禁用 Happy Eyeballs，改成**单地址拨号**。关掉之后，客户端往往不再在多个 IP 间竞速，而是粘在某一个地址上（例如近期会话用过的那条）。一旦这条地址不能持续稳定连通，任务就会频繁中断、发送失败。
 
-本仓库要做的，是在本机把类似效果补回来：对 Cursor 任务相关 API 域名做 **TCP/TLS 建连探测**，筛出当前可达的入口 IP，再通过本机 DNS 把这些可用地址返回给客户端。
+本仓库要做的，是帮 Cursor 把 Happy Eyeballs 补回来：对任务相关 API 域名做 **TCP/TLS 建连探测**，筛出当前可达的入口 IP、剔除不可用 IP，再通过本机 DNS 把这些可用地址返回给客户端。
 
 - 只做建连探测，并通过本机 DNS 返回当前可用入口 IP  
 - 本期只做 macOS 本机优化（探测 + 本地 DNS + 本机状态页）  
@@ -25,7 +25,7 @@ Cursor 的对话 / 推理相关能力同样跑在 Node.js 上，但他们在 Age
 
 下面来自配套监控（[Cursor 网络监控](https://github.com/lixiyu/cursor-api2-monitor)）同一段时间的对照：开启本加速器之后，域名整体可用性从「黄红搅在一起」变成大段畅通；底下各 IP 直连仍有红绿交错，说明节点本身并不完美——加速器做的是**剔坏、选用通的入口**，而不是把每个 IP 都修通。
 
-![加速前后对照：域名可用性明显变稳，单 IP 仍有波动](docs/monitor-accel-before-after.png)
+![加速前后对照：域名可用性明显变稳，单 IP 仍有波动](https://raw.githubusercontent.com/lixiyu/cursor-net-accelerator/main/docs/monitor-accel-before-after.png)
 
 ## 原理
 
@@ -147,7 +147,6 @@ port 53553
 - **选路模式**  
   - **开启加速**：DNS 只返回当前探测健康的 IP（没有健康 IP 时会降级为返回全部解析结果）  
   - **关闭加速**：原样返回上游解析，不筛选  
-  - **拉闸测试**：故意只返回坏 IP；若 Cursor 因此用不了，说明本机 DNS 指路已生效。测完请切回「开启加速」  
 - **健康状态概览**：「服务可达性」看上游全部 IP；「加速效果」按**当时选路挑中的 IP**上色（与模式天然一致）  
 - 探测史默认保留近 6 小时，并落在本机  
   `~/Library/Application Support/cursor-net-accelerator/data/health-history.json`  

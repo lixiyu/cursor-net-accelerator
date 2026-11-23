@@ -34,6 +34,13 @@ class ResolverLifecycleTest(unittest.TestCase):
         self.assertEqual(lines[0], f"nameserver {self.settings.dns_bind}.{self.settings.dns_port}")
         self.assertGreaterEqual(len(lines), 2, "必须带一条系统 DNS 兜底，防止进程挂了就断网")
 
+    def test_fallback_includes_cn_public_dns(self):
+        ips = rm._fallback_nameservers()
+        self.assertTrue(
+            any(ip in rm.CN_PUBLIC_DNS for ip in ips),
+            "兜底应包含至少一条国内公共 DNS（阿里/DNSPod）",
+        )
+
     def test_neutral_content_has_no_local_dns(self):
         body = rm.neutral_contents()
         self.assertNotIn(f"127.0.0.1.{self.settings.dns_port}", body)

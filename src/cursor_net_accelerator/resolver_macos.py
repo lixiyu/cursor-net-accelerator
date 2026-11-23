@@ -17,13 +17,13 @@ def resolver_file_path(domain: str) -> Path:
     return RESOLVER_DIR / domain
 
 
-def _system_nameservers(limit: int = 2) -> list[str]:
-    """系统当前在用的 DNS（跳过本机），用作兜底。
+# 国内常用公共 DNS（阿里 / DNSPod）。大陆可达性通常好于 8.8.8.8；
+# 不保证绕过污染——只适合当我们服务挂了时，把 cursor.sh 等未封域名解析出来。
+CN_PUBLIC_DNS = ("223.5.5.5", "223.6.6.6", "119.29.29.29")
 
-    macOS 的 nameserver 支持 "IP.端口" 写法，且按顺序尝试：
-    先问本机加速器，连不上再退到系统 DNS —— 这样即使进程意外挂掉，
-    域名也不会解析失败，只是首次查询多一点等待。
-    """
+
+def _system_nameservers(limit: int = 2) -> list[str]:
+    """系统当前在用的 DNS（跳过本机）。"""
     ips: list[str] = []
     # 首选 scutil --dns 的 resolver #1：这才是 macOS 实际生效的 DNS
     try:
@@ -66,22 +66,36 @@ def _system_nameservers(limit: int = 2) -> list[str]:
     return ips[:limit]
 
 
+def _fallback_nameservers(limit: int = 4) -> list[str]:
+    """兜底 DNS：系统已有的 + 国内公共 DNS（去重，总数封顶）。
+
+    macOS 的 nameserver 按顺序试：本机加速器连不上时，再问这些。
+    """
+    ips = _system_nameservers(limit=limit)
+    for ip in CN_PUBLIC_DNS:
+        if len(ips) >= limit:
+            break
+        if ip not in ips:
+            ips.append(ip)
+    return ips or list(CN_PUBLIC_DNS[:2])
+
+
 ACTIVE_HEADER = "# managed by cursor-net-accelerator — do not edit by hand"
 NEUTRAL_HEADER = "# cursor-net-accelerator: 已停用，cursor.sh 走系统 DNS"
 
 
 def resolver_contents(settings: Settings) -> str:
-    """运行中：先问本机加速器（自定义端口），再退到系统 DNS。"""
+    """运行中：先问本机加速器（自定义端口），再退到系统 / 国内公共 DNS。"""
     lines = [ACTIVE_HEADER, f"nameserver {settings.dns_bind}.{settings.dns_port}"]
-    for ip in _system_nameservers():
+    for ip in _fallback_nameservers():
         lines.append(f"nameserver {ip}")
     return "\n".join(lines) + "\n"
 
 
 def neutral_contents() -> str:
-    """退出后：只留系统 DNS，等于没装过加速器。"""
+    """退出后：只留系统 / 国内公共 DNS，不再指向本机加速器。"""
     lines = [NEUTRAL_HEADER]
-    for ip in _system_nameservers() or ["8.8.8.8"]:
+    for ip in _fallback_nameservers():
         lines.append(f"nameserver {ip}")
     return "\n".join(lines) + "\n"
 
