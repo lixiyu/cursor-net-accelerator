@@ -93,17 +93,33 @@ def _optional_tls(raw: socket.socket, sni: str, timeout: float) -> str | None:
         return f"tls:{type(exc).__name__}: {exc}"
 
 
-def probe_host(hostname: str, settings: Settings) -> tuple[list[str], list[IpProbeResult]]:
+def probe_host(
+    hostname: str,
+    settings: Settings,
+    *,
+    extra_ips: list[str] | tuple[str, ...] | None = None,
+) -> tuple[list[str], list[IpProbeResult]]:
+    """解析上游 A 记录，并探测 resolved ∪ extra_ips（备选池）。
+
+    返回的 resolved 仅含本次 DNS 结果；results 含所有实际探测到的 IP。
+    """
     resolved = resolve_ips_upstream(hostname, settings.upstream_dns)
+    targets: list[str] = []
+    seen: set[str] = set()
+    for ip in list(resolved) + list(extra_ips or ()):
+        if ip not in seen:
+            seen.add(ip)
+            targets.append(ip)
+    if not targets:
+        return resolved, []
     results_by_ip: dict[str, IpProbeResult] = {}
-    with ThreadPoolExecutor(max_workers=max(1, len(resolved))) as ex:
+    with ThreadPoolExecutor(max_workers=max(1, len(targets))) as ex:
         futs = {
             ex.submit(probe_ip, ip, sni=hostname, timeout=settings.probe_timeout): ip
-            for ip in resolved
+            for ip in targets
         }
         for fut in as_completed(futs):
             r = fut.result()
             results_by_ip[r.ip] = r
-    # keep stable order matching resolution order
-    results = [results_by_ip[ip] for ip in resolved if ip in results_by_ip]
+    results = [results_by_ip[ip] for ip in targets if ip in results_by_ip]
     return resolved, results

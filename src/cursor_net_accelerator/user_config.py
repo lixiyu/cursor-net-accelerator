@@ -13,10 +13,11 @@ log = logging.getLogger(__name__)
 DEFAULTS: dict[str, Any] = {
     "gate_test_enabled": False,
     "transport": "dns",  # dns | proxy
-    "probe_busy_interval_seconds": 60.0,
-    "probe_idle_interval_seconds": 600.0,
-    "probe_idle_after_seconds": 300.0,
-    "probe_min_gap_seconds": 15.0,
+    # 以下三项为旧两档兼容字段；实际节奏见 probe_schedule.TIERS
+    "probe_busy_interval_seconds": 30.0,
+    "probe_idle_interval_seconds": 900.0,
+    "probe_idle_after_seconds": 900.0,
+    "probe_min_gap_seconds": 3.0,
 }
 
 

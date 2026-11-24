@@ -185,6 +185,10 @@ cursor-net-accelerator run
 - 不做成面向任意网站的通用工具
 - 本仓不包含计费、账号、远程节点
 
+## 文档
+
+- [macOS 图标制作笔记](docs/icons/README.md)：主图与菜单栏图标的规格、Retina 档位和排查表
+
 ## License
 
 MIT

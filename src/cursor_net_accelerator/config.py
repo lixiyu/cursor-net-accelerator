@@ -58,6 +58,8 @@ class Settings:
     peer_interval: float
     fail_interval: float
     health_retention_hours: float
+    health_hold_seconds: float
+    candidate_stale_hours: float
     # 用户配置
     gate_test_enabled: bool
     transport: str  # dns | proxy
@@ -92,6 +94,10 @@ class Settings:
         if env_t in ("dns", "proxy"):
             transport = env_t
 
+        health_h = _float("CURSOR_NET_ACCEL_HEALTH_RETENTION_HOURS", 6.0)
+        # 健康条：每次探测向前覆盖时长（默认 5 分钟）
+        health_hold = _float("CURSOR_NET_ACCEL_HEALTH_HOLD_SECONDS", 300.0)
+        candidate_h = _float("CURSOR_NET_ACCEL_CANDIDATE_STALE_HOURS", health_h)
         return cls(
             hosts=_csv(
                 "CURSOR_NET_ACCEL_HOSTS",
@@ -119,7 +125,9 @@ class Settings:
             web_enabled=_bool("CURSOR_NET_ACCEL_WEB", True),
             peer_interval=_float("CURSOR_NET_ACCEL_PEER_INTERVAL", 10.0),
             fail_interval=_float("CURSOR_NET_ACCEL_FAIL_INTERVAL", 60.0),
-            health_retention_hours=_float("CURSOR_NET_ACCEL_HEALTH_RETENTION_HOURS", 6.0),
+            health_retention_hours=health_h,
+            health_hold_seconds=health_hold,
+            candidate_stale_hours=candidate_h,
             gate_test_enabled=bool(gate),
             transport=transport,
             probe_busy_interval=busy,

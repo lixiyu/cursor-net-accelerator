@@ -11,3 +11,5 @@ build/
 .vscode/
 *.log
 data/
+apps/macos-menubar/.build/
+apps/macos-menubar/dist/

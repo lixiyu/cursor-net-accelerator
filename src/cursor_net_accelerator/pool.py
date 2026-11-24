@@ -13,7 +13,9 @@ class IpEntry:
     ok: bool
     connect_ms: float | None
     error: str | None
-    updated_at: float
+    updated_at: float  # monotonic，用于 TTL / 隔离
+    first_seen_at: float  # wall clock，入池时间
+    last_ok_at: float | None  # wall clock，最近一次探测可用
     quarantine_until: float = 0.0
 
 
@@ -26,40 +28,96 @@ class HostPool:
 
 
 class IpPool:
-    """Thread-safe short-TTL pool of probed IPs per hostname."""
+    """Thread-safe pool: DNS 当前解析 + 备选 IP（曾见过的继续探测）。
 
-    def __init__(self, *, quarantine_seconds: float, pool_ttl_seconds: float) -> None:
+    选路（healthy_ips / select_for_mode）目前仍只用「当前 DNS 解析到的」健康 IP；
+    备选只负责多探、多记，供监控与后续入选路。
+    """
+
+    def __init__(
+        self,
+        *,
+        quarantine_seconds: float,
+        pool_ttl_seconds: float,
+        candidate_stale_seconds: float = 6 * 3600,
+    ) -> None:
         self._quarantine = quarantine_seconds
         self._ttl = pool_ttl_seconds
+        self._candidate_stale = max(1.0, float(candidate_stale_seconds))
         self._lock = threading.RLock()
         self._hosts: dict[str, HostPool] = {}
 
+    def known_ips(self, hostname: str) -> list[str]:
+        """池里见过的全部 IP，供本轮与「新 DNS」合并探测。
+
+        不能只用「当前 resolved 以外的备选」：DNS 一翻盘时，旧 resolved
+        在 update 前仍写在池里，会被误判成「已在解析集」而漏探。
+        """
+        with self._lock:
+            hp = self._hosts.get(hostname)
+            if not hp:
+                return []
+            return list(hp.entries.keys())
+
+    def candidate_ips(self, hostname: str) -> list[str]:
+        """相对「池内上一轮 resolved」的备选（展示/调试用，探测请用 known_ips）。"""
+        with self._lock:
+            hp = self._hosts.get(hostname)
+            if not hp:
+                return []
+            resolved = set(hp.resolved)
+            return [ip for ip in hp.entries if ip not in resolved]
+
     def update(self, hostname: str, resolved: list[str], results: list[IpProbeResult]) -> None:
-        now = time.monotonic()
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        resolved_list = list(resolved)
+        resolved_set = set(resolved_list)
         with self._lock:
             hp = self._hosts.get(hostname) or HostPool(hostname=hostname)
-            hp.resolved = list(resolved)
-            hp.updated_at = now
+            hp.resolved = resolved_list
+            hp.updated_at = now_mono
             for r in results:
                 prev = hp.entries.get(r.ip)
                 quarantine_until = prev.quarantine_until if prev else 0.0
                 if not r.ok:
-                    quarantine_until = now + self._quarantine
-                elif prev and prev.quarantine_until > now and r.ok:
-                    # recovered: clear quarantine
+                    quarantine_until = now_mono + self._quarantine
+                elif prev and prev.quarantine_until > now_mono and r.ok:
                     quarantine_until = 0.0
+                first_seen = prev.first_seen_at if prev else now_wall
+                last_ok = prev.last_ok_at if prev else None
+                if r.ok:
+                    last_ok = now_wall
                 hp.entries[r.ip] = IpEntry(
                     ip=r.ip,
                     ok=r.ok,
                     connect_ms=r.connect_ms,
                     error=r.error,
-                    updated_at=now,
+                    updated_at=now_mono,
+                    first_seen_at=first_seen,
+                    last_ok_at=last_ok,
                     quarantine_until=quarantine_until,
                 )
-            # drop IPs no longer in resolution set (keep briefly if quarantined? drop)
-            alive = set(resolved)
-            hp.entries = {ip: e for ip, e in hp.entries.items() if ip in alive}
+            hp.entries = self._prune_entries(hp.entries, resolved_set, now_wall)
             self._hosts[hostname] = hp
+
+    def _prune_entries(
+        self,
+        entries: dict[str, IpEntry],
+        resolved: set[str],
+        now_wall: float,
+    ) -> dict[str, IpEntry]:
+        kept: dict[str, IpEntry] = {}
+        stale = self._candidate_stale
+        for ip, e in entries.items():
+            if ip in resolved:
+                kept[ip] = e
+                continue
+            # 无成功记录：从入池起算；有成功：从最后可用起算
+            anchor = e.last_ok_at if e.last_ok_at is not None else e.first_seen_at
+            if now_wall - anchor <= stale:
+                kept[ip] = e
+        return kept
 
     def resolved_ips(self, hostname: str) -> list[str]:
         with self._lock:
@@ -67,14 +125,17 @@ class IpPool:
             return list(hp.resolved) if hp else []
 
     def healthy_ips(self, hostname: str) -> list[str]:
-        """Return currently usable IPs, best (lowest connect_ms) first."""
+        """选路用：仅当前 DNS 解析集里的健康 IP（备选暂不进入选路）。"""
         now = time.monotonic()
         with self._lock:
             hp = self._hosts.get(hostname)
             if not hp:
                 return []
+            resolved = set(hp.resolved)
             usable: list[IpEntry] = []
             for e in hp.entries.values():
+                if e.ip not in resolved:
+                    continue
                 if not e.ok:
                     continue
                 if e.quarantine_until > now:
@@ -91,17 +152,19 @@ class IpPool:
             return [e.ip for e in usable]
 
     def unhealthy_ips(self, hostname: str) -> list[str]:
-        """IPs currently considered bad (failed probe and/or quarantined)."""
+        """当前 DNS 集里判定为坏的 IP。"""
         now = time.monotonic()
         with self._lock:
             hp = self._hosts.get(hostname)
             if not hp:
                 return []
+            resolved = set(hp.resolved)
             bad: list[IpEntry] = []
             for e in hp.entries.values():
+                if e.ip not in resolved:
+                    continue
                 if (not e.ok) or e.quarantine_until > now:
                     bad.append(e)
-            # worst first (no connect_ms / higher error preference)
             bad.sort(
                 key=lambda e: (
                     e.ok,
@@ -144,7 +207,6 @@ class IpPool:
             meta["bad_in_answer"] = []
             return [], meta
 
-        # good (default)
         if healthy:
             meta["note"] = "开启加速：只返回健康 IP"
             meta["bad_in_answer"] = []
@@ -159,34 +221,63 @@ class IpPool:
         return [], meta
 
     def snapshot(self) -> dict[str, dict]:
-        now = time.monotonic()
+        now_mono = time.monotonic()
+        now_wall = time.time()
         with self._lock:
             out: dict[str, dict] = {}
             for host, hp in self._hosts.items():
+                resolved_set = set(hp.resolved)
                 entries = []
+                candidates = []
                 for e in hp.entries.values():
-                    entries.append(
-                        {
-                            "ip": e.ip,
-                            "ok": e.ok,
-                            "connect_ms": e.connect_ms,
-                            "error": e.error,
-                            "age_s": round(now - e.updated_at, 1),
-                            "quarantined": e.quarantine_until > now,
-                            "quarantine_left_s": max(0.0, round(e.quarantine_until - now, 1)),
-                        }
-                    )
+                    in_dns = e.ip in resolved_set
+                    row = {
+                        "ip": e.ip,
+                        "ok": e.ok,
+                        "connect_ms": e.connect_ms,
+                        "error": e.error,
+                        "age_s": round(now_mono - e.updated_at, 1),
+                        "quarantined": e.quarantine_until > now_mono,
+                        "quarantine_left_s": max(
+                            0.0, round(e.quarantine_until - now_mono, 1)
+                        ),
+                        "in_dns": in_dns,
+                        "first_seen_at": e.first_seen_at,
+                        "last_ok_at": e.last_ok_at,
+                        "first_seen_age_s": round(now_wall - e.first_seen_at, 1),
+                        "last_ok_age_s": (
+                            round(now_wall - e.last_ok_at, 1)
+                            if e.last_ok_at is not None
+                            else None
+                        ),
+                        "role": "dns" if in_dns else "candidate",
+                    }
+                    entries.append(row)
+                    if not in_dns:
+                        candidates.append(row)
                 entries.sort(
                     key=lambda x: (
+                        not x["in_dns"],
                         not x["ok"],
                         x["connect_ms"] is None,
                         x["connect_ms"] if x["connect_ms"] is not None else 1e9,
                     )
                 )
+                candidates.sort(
+                    key=lambda x: (
+                        not x["ok"],
+                        x["last_ok_age_s"] is None,
+                        x["last_ok_age_s"] if x["last_ok_age_s"] is not None else 1e9,
+                    )
+                )
                 out[host] = {
                     "resolved": list(hp.resolved),
                     "healthy": self.healthy_ips(host),
-                    "updated_age_s": round(now - hp.updated_at, 1) if hp.updated_at else None,
+                    "updated_age_s": round(now_mono - hp.updated_at, 1)
+                    if hp.updated_at
+                    else None,
                     "entries": entries,
+                    "candidates": candidates,
+                    "candidate_stale_s": self._candidate_stale,
                 }
             return out

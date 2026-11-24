@@ -19,6 +19,7 @@ from .paths import config_path
 from .peer_watch import PeerWatcher
 from .pool import IpPool
 from .probe import probe_host
+from .probe_schedule import interval_for_age, tiers_public
 from .resolver_macos import activate as resolver_activate
 from .resolver_macos import neutralize as resolver_neutralize
 from .resolver_macos import status as resolver_status
@@ -35,6 +36,7 @@ class AcceleratorService:
         self.store = EventStore()
         self.health = HealthHistory(
             retention_hours=settings.health_retention_hours,
+            hold_seconds=settings.health_hold_seconds,
         )
         self._mode_lock = threading.Lock()
         self._routing_mode = "good"
@@ -46,6 +48,7 @@ class AcceleratorService:
         self.pool = IpPool(
             quarantine_seconds=settings.quarantine_seconds,
             pool_ttl_seconds=settings.pool_ttl_seconds,
+            candidate_stale_seconds=settings.candidate_stale_hours * 3600.0,
         )
         self.dns = DnsService(
             pool=self.pool,
@@ -171,35 +174,55 @@ class AcceleratorService:
                     return host
         return None
 
-    def _idle(self) -> bool:
+    def _activity_age(self) -> float:
         with self._activity_lock:
-            age = time.monotonic() - self._last_activity_at
-        return age >= self.settings.probe_idle_after
+            return time.monotonic() - self._last_activity_at
+
+    def _idle(self) -> bool:
+        """兼容旧字段：闲/沉档视为 idle。"""
+        tier, _ = interval_for_age(self._activity_age())
+        return tier.name in ("idle", "deep")
 
     def current_probe_interval(self) -> float:
-        return (
-            self.settings.probe_idle_interval
-            if self._idle()
-            else self.settings.probe_busy_interval
-        )
+        _, interval = interval_for_age(self._activity_age())
+        return interval
+
+    def current_probe_tier(self) -> tuple[str, str, float]:
+        tier, interval = interval_for_age(self._activity_age())
+        return tier.name, tier.label, interval
 
     def probe_once(self) -> None:
         with self._probe_lock:
             for host in self.settings.hosts:
                 try:
-                    resolved, results = probe_host(host, self.settings)
+                    # 池内全部已知 IP ∪ 本轮 DNS；避免 DNS 翻盘时旧解析集被漏探
+                    extra = self.pool.known_ips(host)
+                    resolved, results = probe_host(
+                        host, self.settings, extra_ips=extra
+                    )
                     self.pool.update(host, resolved, results)
+                    mode = self.get_routing_mode()
+                    answered, _meta = self.pool.select_for_mode(host, mode)
                     self.health.add_round(
                         host,
                         [(r.ip, r.ok, r.connect_ms) for r in results],
-                        routing_mode=self.get_routing_mode(),
+                        routing_mode=mode,
+                        resolved_ips=resolved,
+                        answered_ips=answered,
                     )
                     healthy = self.pool.healthy_ips(host)
+                    cand_ok = [
+                        r.ip
+                        for r in results
+                        if r.ok and r.ip not in set(resolved)
+                    ]
                     log.info(
-                        "probe %s resolved=%s healthy=%s",
+                        "probe %s resolved=%s healthy=%s candidates_extra=%s cand_ok=%s",
                         host,
                         resolved,
                         healthy,
+                        extra,
+                        cand_ok,
                     )
                     for r in results:
                         self.store.record_probe(
@@ -228,6 +251,7 @@ class AcceleratorService:
             routing_modes["bad"] = "拉闸测试"
         with self._activity_lock:
             activity_age = round(time.monotonic() - self._last_activity_at, 1)
+        tier_name, tier_label, tier_interval = self.current_probe_tier()
         return {
             "ok": True,
             "routing_mode": mode,
@@ -250,16 +274,20 @@ class AcceleratorService:
                 },
             },
             "probe_schedule": {
-                "busy_interval_s": self.settings.probe_busy_interval,
-                "idle_interval_s": self.settings.probe_idle_interval,
-                "idle_after_s": self.settings.probe_idle_after,
+                "tier": tier_name,
+                "tier_label": tier_label,
+                "current_interval_s": round(tier_interval, 1),
                 "min_gap_s": self.settings.probe_min_gap,
                 "idle": self._idle(),
-                "current_interval_s": self.current_probe_interval(),
                 "activity_age_s": activity_age,
                 "last_probe_age_s": round(time.monotonic() - self._last_probe_at, 1)
                 if self._last_probe_at
                 else None,
+                "tiers": tiers_public(),
+                # 旧字段保留，避免外部脚本挂掉
+                "busy_interval_s": self.settings.probe_busy_interval,
+                "idle_interval_s": self.settings.probe_idle_interval,
+                "idle_after_s": self.settings.probe_idle_after,
             },
             "settings": {
                 "hosts": list(self.settings.hosts),
@@ -272,6 +300,7 @@ class AcceleratorService:
                 "interval": self.settings.probe_busy_interval,
                 "resolver_domain": self.settings.resolver_domain,
                 "health_retention_hours": self.settings.health_retention_hours,
+                "candidate_stale_hours": self.settings.candidate_stale_hours,
                 "config_path": str(config_path()),
             },
             "macos_resolver": resolver_status(self.settings),
@@ -413,14 +442,21 @@ class AcceleratorService:
                 break
             now = time.monotonic()
             gap = now - self._last_probe_at
-            if gap < self.settings.probe_min_gap:
-                remain = self.settings.probe_min_gap - gap
+            # min_gap 不得拖死热档（5s）；取配置与「当前间隔×0.8」的较小者
+            min_gap = min(
+                self.settings.probe_min_gap,
+                max(2.0, interval * 0.8),
+            )
+            if gap < min_gap:
+                remain = min_gap - gap
                 if self._stop.wait(remain):
                     break
-            reason = "activity" if woke else ("idle" if self._idle() else "busy")
+            tier_name, tier_label, _ = self.current_probe_tier()
+            reason = "activity" if woke else tier_name
             log.debug(
-                "probe tick reason=%s interval=%.0fs",
+                "probe tick reason=%s tier=%s interval=%.1fs",
                 reason,
+                tier_label,
                 interval,
             )
             self.probe_once()

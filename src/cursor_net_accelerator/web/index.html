@@ -101,8 +101,57 @@
     button:active { transform: translateY(1px); }
     button.secondary { background: #292524; }
     button.danger { background: #dc2626; }
-    button.active { box-shadow: 0 0 0 3px #ffffffcc, 0 0 0 5px currentColor; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* 选路：未选=描边，当前=实心，一眼能分清 */
+    #mode-section .mode-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 0;
+    }
+    #mode-section .mode-now {
+      font-size: 0.88rem;
+      font-weight: 650;
+      color: var(--accent);
+      margin-right: 4px;
+    }
+    #mode-section .mode-now[data-mode="off"] { color: #57534e; }
+    #mode-section .mode-now[data-mode="bad"] { color: #b91c1c; }
+    #mode-section button[data-mode] {
+      background: transparent;
+      color: var(--ink);
+      border: 1.5px solid var(--line);
+      box-shadow: none;
+      filter: none;
+    }
+    #mode-section button[data-mode]:hover {
+      border-color: #a8a29e;
+      filter: none;
+      background: #fafaf9;
+    }
+    #mode-section button[data-mode].active {
+      color: #fff;
+      border-color: transparent;
+      opacity: 1;
+      cursor: default;
+    }
+    #mode-section button#mode-good.active {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    #mode-section button#mode-off.active {
+      background: #292524;
+      border-color: #292524;
+    }
+    #mode-section button#mode-bad.active {
+      background: #dc2626;
+      border-color: #dc2626;
+    }
+    #mode-section button[data-mode]:not(.active) {
+      opacity: 0.72;
+    }
     main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
     h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.02em; }
     .sub { color: var(--muted); margin-bottom: 24px; }
@@ -187,6 +236,45 @@
     /* 健康条：对齐 monitor 的观感，留在浅色页里 */
     .health-block { margin-bottom: 18px; }
     .health-block:last-child { margin-bottom: 0; }
+    .health-strips {
+      position: relative;
+      padding-top: 18px; /* 给 scrub 时间标签留位 */
+    }
+    .scrub-overlay {
+      position: absolute;
+      top: 18px;
+      bottom: 18px; /* 避开底部时间轴文字 */
+      left: calc(148px + 12px);
+      right: 0;
+      pointer-events: none;
+      z-index: 5;
+      opacity: 0; /* 占位可测宽；display:none 会导致永远量不到宽度 */
+    }
+    .scrub-overlay.show { opacity: 1; }
+    .scrub-overlay .scrub-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      margin-left: -1px;
+      background: #5eb0ff;
+      box-shadow: 0 0 0 1px rgba(5, 16, 28, 0.45);
+    }
+    .scrub-overlay .scrub-time {
+      position: absolute;
+      top: -18px;
+      transform: translateX(-50%);
+      padding: 0 6px;
+      height: 16px;
+      line-height: 16px;
+      border-radius: 4px;
+      background: rgba(5, 16, 28, 0.88);
+      color: #e8f3ff;
+      font-size: 0.72rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
     .health-block h3 {
       margin: 0 0 10px;
       font-size: 0.92rem;
@@ -216,9 +304,7 @@
       white-space: nowrap;
     }
     .ip-strip {
-      display: flex;
-      gap: 1px;
-      align-items: stretch;
+      position: relative;
       width: 100%;
       height: 18px;
       padding: 0;
@@ -229,9 +315,12 @@
       cursor: crosshair;
     }
     .ip-strip .seg {
-      flex: 1 0 0;
-      min-width: 0;
-      border-radius: 0;
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      min-width: 2px;
+      box-sizing: border-box;
+      border-right: 1px solid var(--strip-track);
       background: var(--bad);
     }
     .ip-strip .seg.ok { background: var(--ok); }
@@ -271,6 +360,7 @@
     }
     @media (max-width: 720px) {
       .strip-row { grid-template-columns: 1fr; gap: 4px; }
+      .scrub-overlay { left: 0; }
     }
     @media (max-width: 900px) {
       .log-grid { grid-template-columns: 1fr; }
@@ -289,10 +379,13 @@
 
   <section id="mode-section">
     <h2>选路模式 <span class="h2-note" id="mode-note">开启加速：只返回探测健康的 IP；关闭加速：原样返回上游解析结果。</span></h2>
-    <div class="row" style="margin-bottom:0">
-      <button id="mode-good" data-mode="good" title="只返回探测健康的 IP">开启加速</button>
-      <button class="secondary" id="mode-off" data-mode="off" title="不做筛选，原样返回上游解析结果">关闭加速</button>
-      <button class="danger" id="mode-bad" data-mode="bad" hidden
+    <div class="mode-row">
+      <span class="mode-now" id="mode-now" data-mode="good">当前：开启加速</span>
+      <button type="button" id="mode-good" data-mode="good" aria-pressed="true"
+              title="只返回探测健康的 IP">开启加速</button>
+      <button type="button" class="secondary" id="mode-off" data-mode="off" aria-pressed="false"
+              title="不做筛选，原样返回上游解析结果">关闭加速</button>
+      <button type="button" class="danger" id="mode-bad" data-mode="bad" hidden aria-pressed="false"
               title="故意不返回任何 IP，用来验证加速器是否真的在生效。测完请切回「开启加速」">拉闸测试</button>
     </div>
   </section>
@@ -301,7 +394,6 @@
 
   <section>
     <h2>健康状态概览</h2>
-    <p class="note" id="health-hint">绿=健康 · 黄=有红有绿 · 红=不可达。只画有探测的时间格。服务重启后历史会清空。</p>
     <div id="health"></div>
     <div class="legend">
       <span><i style="background:var(--ok)"></i>健康</span>
@@ -312,7 +404,6 @@
 
   <section>
     <h2>按 IP 汇总</h2>
-    <p class="note">域名几乎不变；是否有用，主要看 Cursor 是否连到探测判定为健康的 IP，以及失败是否仍扎堆在坏 IP 上。</p>
     <table>
       <thead>
         <tr>
@@ -330,7 +421,25 @@
 
   <section>
     <h2>可用池（最近一轮探测）</h2>
+    <p class="note">选路目前只用「DNS 当前」里的健康 IP；备选只多探、多记，暂不进选路。</p>
     <div id="pool"></div>
+  </section>
+
+  <section>
+    <h2>备选 IP 池 <span class="h2-note" id="candidate-note">DNS 下掉后仍继续探测；过久不可用会淘汰</span></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>域名</th>
+          <th>IP</th>
+          <th>来源</th>
+          <th>最近探测</th>
+          <th>入池</th>
+          <th>最后可用</th>
+        </tr>
+      </thead>
+      <tbody id="candidates"></tbody>
+    </table>
   </section>
 
   <div class="log-grid">
@@ -379,13 +488,22 @@ async function loadOnce() {
   // 关掉时只隐藏「拉闸测试」这一个按钮，另外两个始终可见。
   const mode = data.routing_mode || 'good';
   const gateOn = data.gate_test_enabled === true;
+  const modeLabels = { good: '开启加速', off: '关闭加速', bad: '拉闸测试' };
   document.body.classList.toggle('mode-bad', mode === 'bad');
+  const modeNow = document.getElementById('mode-now');
+  if (modeNow) {
+    modeNow.dataset.mode = mode;
+    modeNow.textContent = '当前：' + (modeLabels[mode] || mode);
+  }
   ['good', 'off', 'bad'].forEach(m => {
     const btn = document.getElementById('mode-' + m);
     if (!btn) return;
+    const isActive = mode === m;
     btn.hidden = (m === 'bad' && !gateOn);
-    btn.classList.toggle('active', mode === m);
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
     btn.onclick = () => {
+      if (mode === m) return;
       if (m === 'bad' && !confirm(
         '拉闸后 DNS 不返回任何 IP，Cursor 会立刻连不上（这是预期效果）。\n\n测完务必切回「开启加速」。继续？'
       )) return;
@@ -425,7 +543,13 @@ async function loadOnce() {
     hostsPill,
     pill('resolver', resolver.installed ? '已安装' : '未安装'),
     sched.current_interval_s != null
-      ? pill('探测节奏', (sched.idle ? '闲置 ' : '活跃 ') + sched.current_interval_s + 's')
+      ? `<div class="pill has-tip" tabindex="0" data-tip="${tipAttr(
+          (sched.tiers || []).map(t => {
+            const span = fmtDurRange(t.activity_age_from_s || 0, t.activity_age_to_s);
+            const every = t.interval || fmtDur(t.base_s);
+            return `${t.label}：无活动 ${span} → 每 ${every}`;
+          }).join('\n') || '多档探测节奏'
+        )}"><strong>探测节奏</strong> · ${esc(sched.tier_label || (sched.idle ? '闲' : '忙'))} ${esc(fmtDur(sched.current_interval_s))}</div>`
       : '',
   ].filter(Boolean);
   if (dial && dial.state) {
@@ -466,8 +590,39 @@ async function loadOnce() {
 
   renderHealth(data.health || {});
 
+  const pool = data.pool || {};
   const tbody = document.getElementById('by-ip');
-  // 排序：先域名、再 IP（IP 补零成定宽，避免 10.0.0.10 排在 10.0.0.2 之前）
+  // 每个域名下：该 IP 是 DNS 当前还是备选（备选相对域名，不能做成整行一个「来源」）
+  const ipRoleByHost = {}; // host -> { ip -> 'dns'|'candidate' }
+  for (const [host, h] of Object.entries(pool)) {
+    const roles = {};
+    for (const ip of (h.resolved || [])) roles[ip] = 'dns';
+    for (const e of (h.entries || [])) {
+      if (e.in_dns) roles[e.ip] = 'dns';
+      else if (!roles[e.ip]) roles[e.ip] = 'candidate';
+    }
+    ipRoleByHost[host] = roles;
+  }
+  const formatHostCell = (ip, hostnames) => {
+    const hosts = new Set(hostnames || []);
+    for (const [host, roles] of Object.entries(ipRoleByHost)) {
+      if (roles[ip]) hosts.add(host);
+    }
+    const list = [...hosts].sort((a, b) => {
+      const ra = (ipRoleByHost[a] || {})[ip] === 'candidate' ? 1 : 0;
+      const rb = (ipRoleByHost[b] || {})[ip] === 'candidate' ? 1 : 0;
+      if (ra !== rb) return ra - rb;
+      return a < b ? -1 : 1;
+    });
+    if (!list.length) return '<span class="muted">-</span>';
+    return list.map(host => {
+      const role = (ipRoleByHost[host] || {})[ip];
+      if (role === 'candidate') {
+        return `<span class="mono">${esc(host)}<span class="muted">(备选)</span></span>`;
+      }
+      return `<span class="mono">${esc(host)}</span>`;
+    }).join(', ');
+  };
   const ipKey = ip => String(ip || '').split('.')
     .map(o => String(o).padStart(3, '0')).join('.');
   const hostKey = r => ((r.hostnames || [])[0] || '\uffff');
@@ -476,7 +631,8 @@ async function loadOnce() {
     if (ha !== hb) return ha < hb ? -1 : 1;
     return ipKey(a.ip) < ipKey(b.ip) ? -1 : (ipKey(a.ip) > ipKey(b.ip) ? 1 : 0);
   });
-  tbody.innerHTML = rows.length ? rows.map(r => `<tr>
+  tbody.innerHTML = rows.length ? rows.map(r => {
+    return `<tr>
       <td class="mono">${esc(r.ip)}</td>
       <td class="${r.last_probe_ok === true ? 'ok' : (r.last_probe_ok === false ? 'bad' : '')}">${
         r.last_probe_ok == null ? '-' :
@@ -485,21 +641,68 @@ async function loadOnce() {
       <td>${r.dns_serve_count}</td>
       <td>${r.dns_preferred_count}</td>
       <td>${r.peer_seen_count}${r.last_peer_age_s != null ? ' <span class="muted">(' + r.last_peer_age_s + 's前)</span>' : ''}</td>
-      <td class="mono">${esc((r.hostnames || []).join(', '))}</td>
-    </tr>`).join('') : '<tr><td colspan="6" class="muted">暂无数据，等探测 / DNS / Cursor 连接采样</td></tr>';
+      <td>${formatHostCell(r.ip, r.hostnames)}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="6" class="muted">暂无数据，等探测 / DNS / Cursor 连接采样</td></tr>';
 
-  const pool = data.pool || {};
+  const staleH = (data.settings && data.settings.candidate_stale_hours) != null
+    ? data.settings.candidate_stale_hours
+    : 6;
+  const candNote = document.getElementById('candidate-note');
+  if (candNote) {
+    candNote.textContent =
+      `DNS 下掉后仍继续探测；超过约 ${staleH}h 无可用记录则淘汰。选路暂不用备选。`;
+  }
   document.getElementById('pool').innerHTML = Object.keys(pool).length
     ? Object.entries(pool).map(([host, h]) => {
         const healthy = (h.healthy || []).map(ip => `<span class="ok mono">${esc(ip)}</span>`).join(' · ') || '<span class="bad">无</span>';
-        const entries = (h.entries || []).map(e =>
-          `<div class="mono">${esc(e.ip)} · ${e.ok ? '<span class="ok">ok</span>' : '<span class="bad">fail</span>'}` +
-          `${e.connect_ms != null ? ' · ' + Math.round(e.connect_ms) + 'ms' : ''}` +
-          `${e.quarantined ? ' · 隔离' : ''}</div>`
-        ).join('');
-        return `<div style="margin-bottom:12px"><strong class="mono">${esc(host)}</strong><div>healthy: ${healthy}</div>${entries}</div>`;
+        const entries = (h.entries || []).map(e => {
+          const role = e.in_dns === false ? '备选' : 'DNS';
+          return `<div class="mono">${esc(e.ip)} · <span class="muted">${role}</span> · ` +
+            `${e.ok ? '<span class="ok">ok</span>' : '<span class="bad">fail</span>'}` +
+            `${e.connect_ms != null ? ' · ' + Math.round(e.connect_ms) + 'ms' : ''}` +
+            `${e.quarantined ? ' · 隔离' : ''}</div>`;
+        }).join('');
+        return `<div style="margin-bottom:12px"><strong class="mono">${esc(host)}</strong><div>选路 healthy: ${healthy}</div>${entries}</div>`;
       }).join('')
     : '<p class="muted">暂无探测结果</p>';
+
+  const candBody = document.getElementById('candidates');
+  if (candBody) {
+    const candRows = [];
+    for (const [host, h] of Object.entries(pool)) {
+      for (const e of (h.entries || [])) {
+        candRows.push({ host, e });
+      }
+    }
+    candRows.sort((a, b) => {
+      if (a.host !== b.host) return a.host < b.host ? -1 : 1;
+      if (!!a.e.in_dns !== !!b.e.in_dns) return a.e.in_dns ? -1 : 1;
+      return String(a.e.ip).localeCompare(String(b.e.ip));
+    });
+    const fmtAge = (s) => {
+      if (s == null) return '-';
+      if (s < 90) return Math.round(s) + 's前';
+      if (s < 3600) return Math.round(s / 60) + '分钟前';
+      return (s / 3600).toFixed(1) + '小时前';
+    };
+    candBody.innerHTML = candRows.length
+      ? candRows.map(({ host, e }) => {
+          const src = e.in_dns ? '<span class="ok">DNS 当前</span>' : '<span class="muted">备选</span>';
+          const probe = e.ok
+            ? `<span class="ok">通</span>${e.connect_ms != null ? ' ' + Math.round(e.connect_ms) + 'ms' : ''}`
+            : '<span class="bad">不通</span>';
+          return `<tr>
+            <td class="mono">${esc(host)}</td>
+            <td class="mono">${esc(e.ip)}</td>
+            <td>${src}</td>
+            <td>${probe}</td>
+            <td class="muted">${esc(fmtAge(e.first_seen_age_s))}</td>
+            <td class="muted">${esc(fmtAge(e.last_ok_age_s))}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="6" class="muted">暂无；跑几轮探测后，DNS 曾出现过的 IP 会留在这里继续测</td></tr>';
+  }
 
   const fails = (data.cursor_failures && data.cursor_failures.events) || [];
   document.getElementById('fails').innerHTML = fails.length
@@ -546,28 +749,99 @@ function renderHealth(health) {
   const retain = health.retention_hours != null ? health.retention_hours : health.hours;
   if (retain != null) hint.push(`保留近 ${retain}h`);
   if (health.round_count != null) hint.push(`${health.round_count} 轮探测`);
-  if (health.slot_seconds != null) hint.push(`约 ${Math.round(health.slot_seconds)}s/格`);
-  document.getElementById('health-hint').textContent =
-    (hint.length ? hint.join(' · ') + '。' : '') +
-    '绿=健康 · 黄=有红有绿（加速效果按选路挑中的 IP；服务看全部 IP）· 红=不可达；单 IP 只有红绿。超时清 6h 前；探测史会落盘，重启可恢复。';
+  if (health.hold_seconds != null) hint.push(`向前覆盖 ${Math.round(health.hold_seconds)}s`);
+  else if (health.slot_seconds != null) hint.push(`向前覆盖 ${Math.round(health.slot_seconds)}s`);
 
   el.innerHTML = keys.map(host => {
     const h = allHosts[host];
-    const ipRows = (h.ips || []).map(ip => stripRow(ip.ip, ip.slot_segments)).join('');
-    return `<div class="health-block">
+    const range = { from: health.from, to: health.to };
+    const ipRows = (h.ips || []).map(ip => {
+      const role = ip.role || (ip.in_dns === false ? 'candidate' : 'dns');
+      const label = role === 'candidate'
+        ? `${ip.ip} · 备选`
+        : ip.ip;
+      return stripRow(label, ip.slot_segments, range);
+    }).join('');
+    return `<div class="health-block" data-from="${esc(health.from || '')}" data-to="${esc(health.to || '')}">
       <h3 class="mono">${esc(host)}</h3>
-      ${stripRow('加速效果', h.accelerated && h.accelerated.slot_segments)}
-      ${stripRow('服务可达性', h.service && h.service.slot_segments)}
-      ${ipRows}
-      ${renderTimeAxis(health.from, health.to)}
+      <div class="health-strips">
+        <div class="scrub-overlay" aria-hidden="true">
+          <div class="scrub-line"></div>
+          <div class="scrub-time"></div>
+        </div>
+        ${stripRow('加速效果', h.accelerated && h.accelerated.slot_segments, range)}
+        ${stripRow('服务可达性', h.service && h.service.slot_segments, range)}
+        ${ipRows}
+        ${renderTimeAxis(health.from, health.to)}
+      </div>
     </div>`;
   }).join('');
+  bindStripScrubbers();
 }
 
-function stripRow(label, segments) {
+function fmtScrubTime(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function setStripScrub(block, ratio) {
+  const pct = Math.max(0, Math.min(1, ratio));
+  const overlay = block.querySelector('.scrub-overlay');
+  if (!overlay) return;
+  const line = overlay.querySelector('.scrub-line');
+  const timeEl = overlay.querySelector('.scrub-time');
+  overlay.classList.add('show');
+  if (line) line.style.left = pct * 100 + '%';
+  if (timeEl) {
+    const t0 = new Date(block.dataset.from || '').getTime();
+    const t1 = new Date(block.dataset.to || '').getTime();
+    if (Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0) {
+      timeEl.textContent = fmtScrubTime(t0 + (t1 - t0) * pct);
+      timeEl.style.left = pct * 100 + '%';
+      // 贴边时别裁切：左右各留半个标签宽
+      const edge = 0.08;
+      if (pct < edge) timeEl.style.transform = 'translateX(0)';
+      else if (pct > 1 - edge) timeEl.style.transform = 'translateX(-100%)';
+      else timeEl.style.transform = 'translateX(-50%)';
+    } else {
+      timeEl.textContent = '';
+    }
+  }
+}
+
+function clearStripScrub(block) {
+  const overlay = block && block.querySelector('.scrub-overlay');
+  if (overlay) overlay.classList.remove('show');
+}
+
+function bindStripScrubbers() {
+  document.querySelectorAll('.health-block').forEach((block) => {
+    if (block.dataset.scrubBound === '1') return;
+    block.dataset.scrubBound = '1';
+    const strips = block.querySelector('.health-strips');
+    if (!strips) return;
+    strips.addEventListener('mousemove', (ev) => {
+      const overlay = block.querySelector('.scrub-overlay');
+      if (!overlay) return;
+      const rect = overlay.getBoundingClientRect();
+      if (!rect.width) return;
+      // 只在色条列内响应
+      if (ev.clientX < rect.left || ev.clientX > rect.right) {
+        clearStripScrub(block);
+        return;
+      }
+      setStripScrub(block, (ev.clientX - rect.left) / rect.width);
+    });
+    strips.addEventListener('mouseleave', () => clearStripScrub(block));
+  });
+}
+
+function stripRow(label, segments, range) {
   return `<div class="strip-row">
     <div class="strip-label mono">${esc(label)}</div>
-    <div class="ip-strip">${renderStrip(segments)}</div>
+    <div class="ip-strip">${renderStrip(segments, range)}</div>
   </div>`;
 }
 
@@ -599,6 +873,35 @@ function renderTimeAxis(fromIso, toIso) {
   </div>`;
 }
 
+/** 时长：秒 / 分钟 / 小时，避免 7200s 这种要心算的写法 */
+function fmtDur(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return '∞';
+  let s = Math.round(Number(seconds));
+  if (s < 0) s = 0;
+  if (s < 60) return s + '秒';
+  if (s < 3600) {
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem === 0 ? m + '分钟' : m + '分' + rem + '秒';
+  }
+  const h = Math.floor(s / 3600);
+  const rem = s % 3600;
+  if (rem === 0) return h + '小时';
+  if (rem % 60 === 0) return h + '小时' + (rem / 60) + '分钟';
+  return h + '小时' + Math.floor(rem / 60) + '分' + (rem % 60) + '秒';
+}
+
+function fmtDurRange(lo, hi) {
+  const a = fmtDur(lo == null ? 0 : lo);
+  const b = fmtDur(hi);
+  for (const unit of ['秒', '分钟', '小时']) {
+    if (a.endsWith(unit) && b.endsWith(unit)) {
+      return a.slice(0, -unit.length) + '~' + b;
+    }
+  }
+  return a + '~' + b;
+}
+
 function fmtLocal(iso) {
   if (!iso) return '';
   const d = new Date(iso.includes('T') || iso.includes('Z') || iso.includes('+')
@@ -625,29 +928,44 @@ function fmtLogWall(s) {
 
 /** 同色邻格最多并多少齿；太大成色带，太碎像马赛克 */
 const STRIP_MAX_MERGE = 4;
-/** 单条色带的单元数上限：payload 异常时也不至于把主线程拖死 */
-const STRIP_MAX_UNITS = 4000;
 
-function renderStrip(segments) {
-  if (!segments || !segments.length) return '<span class="muted" style="padding:4px 8px">无</span>';
-  const units = [];
-  for (const seg of segments) {
-    const n = Math.max(1, Math.min(Number(seg.count) || 1, STRIP_MAX_UNITS - units.length));
-    for (let i = 0; i < n; i++) units.push(seg);
-    if (units.length >= STRIP_MAX_UNITS) break;
+/**
+ * 按绝对时间轴摆色块（与底部时间轴对齐）。
+ * 以前只用 flex 均分「有数据的格」，稀疏 IP 会被拉成整条色带，看起来像一直在探测。
+ */
+function renderStrip(segments, range) {
+  if (!segments || !segments.length) {
+    return '';
   }
+  const t0 = range && range.from != null ? new Date(range.from).getTime() : NaN;
+  const t1 = range && range.to != null ? new Date(range.to).getTime() : NaN;
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) {
+    return '<span class="muted" style="padding:4px 8px">无</span>';
+  }
+  const span = t1 - t0;
+  // 先按时间排序，再合并相邻同色（仍受 STRIP_MAX_MERGE 限制）
+  const sorted = segments.slice().sort((a, b) =>
+    new Date(a.start).getTime() - new Date(b.start).getTime()
+  );
   const parts = [];
-  for (const u of units) {
+  for (const u of sorted) {
     const last = parts[parts.length - 1];
-    if (last && last.state === (u.state || 'empty') && last.count < STRIP_MAX_MERGE) {
+    const state = u.state || 'empty';
+    if (state === 'empty') continue;
+    if (
+      last &&
+      last.state === state &&
+      last.count < STRIP_MAX_MERGE &&
+      Math.abs(new Date(u.start).getTime() - new Date(last.end).getTime()) < 2000
+    ) {
       last.count += 1;
       last.end = u.end;
       if (u.ok != null) last.ok = (last.ok || 0) + (u.ok || 0);
       if (u.fail != null) last.fail = (last.fail || 0) + (u.fail || 0);
     } else {
       parts.push({
-        state: u.state || 'empty',
-        label: u.label || u.state,
+        state,
+        label: u.label || state,
         count: 1,
         start: u.start,
         end: u.end,
@@ -657,9 +975,15 @@ function renderStrip(segments) {
     }
   }
   return parts.map(seg => {
+    const a = new Date(seg.start).getTime();
+    const b = new Date(seg.end).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return '';
+    const left = Math.max(0, Math.min(100, ((a - t0) / span) * 100));
+    const rawW = ((b - a) / span) * 100;
+    const width = Math.max(Math.min(rawW, 100 - left), 0.35);
     const title = `${fmtLocal(seg.start)} → ${fmtLocal(seg.end)} · ${seg.label || seg.state}` +
       (seg.ok != null || seg.fail != null ? ` · ok ${seg.ok || 0} / fail ${seg.fail || 0}` : '');
-    return `<div class="seg ${esc(seg.state)}" style="flex-grow:${seg.count};flex-shrink:0;flex-basis:0" title="${esc(title)}"></div>`;
+    return `<div class="seg ${esc(seg.state)}" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" title="${esc(title)}"></div>`;
   }).join('');
 }
 

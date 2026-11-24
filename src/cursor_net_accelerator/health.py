@@ -32,6 +32,9 @@ class ProbeRound:
     hostname: str
     samples: list[ProbeSample] = field(default_factory=list)
     routing_mode: str = "good"  # good | off | bad，当时选路模式
+    # 当时 DNS 解析集 / 选路实际下发（挑中）的 IP；旧落盘可能为空
+    resolved_ips: list[str] = field(default_factory=list)
+    answered_ips: list[str] = field(default_factory=list)
 
     @property
     def any_ok(self) -> bool:
@@ -58,6 +61,55 @@ def picked_ips_for_mode(samples: list[ProbeSample], mode: str) -> list[str]:
     return order
 
 
+def hold_segments(
+    events: list[tuple[float, str]],
+    *,
+    t0: float,
+    t1: float,
+    hold_s: float,
+) -> list[dict[str, Any]]:
+    """探测点向前覆盖：每点覆盖 (T-hold, T]，但左边界不低于上一探时刻；未覆盖为空白。
+
+    events: (ts, state) state ∈ ok|bad|mixed
+    """
+    if not events or t1 <= t0 or hold_s <= 0:
+        return []
+    ordered = sorted(events, key=lambda x: x[0])
+    labels = {"ok": "健康", "bad": "不可达", "mixed": "有红有绿"}
+    raw: list[tuple[float, float, str]] = []
+    prev_ts: float | None = None
+    for ts, state in ordered:
+        if state not in labels:
+            continue
+        left = max(t0, ts - hold_s)
+        if prev_ts is not None:
+            left = max(left, prev_ts)
+        right = min(float(ts), t1)
+        if left < right:
+            raw.append((left, right, state))
+        prev_ts = float(ts)
+    if not raw:
+        return []
+    # 合并相邻同色
+    merged: list[tuple[float, float, str]] = [raw[0]]
+    for a, b, st in raw[1:]:
+        la, lb, lst = merged[-1]
+        if st == lst and abs(a - lb) < 1e-6:
+            merged[-1] = (la, b, st)
+        else:
+            merged.append((a, b, st))
+    return [
+        {
+            "start": _utc_iso(a),
+            "end": _utc_iso(b),
+            "state": st,
+            "label": labels[st],
+            "count": 1,
+        }
+        for a, b, st in merged
+    ]
+
+
 class HealthHistory:
     """Probe rounds for health strips; memory + optional disk under data/."""
 
@@ -65,6 +117,7 @@ class HealthHistory:
         self,
         *,
         retention_hours: float = 6.0,
+        hold_seconds: float = 300.0,
         maxlen: int = 5000,
         persist_path: Path | None = None,
         persist: bool = True,
@@ -72,6 +125,8 @@ class HealthHistory:
         self._lock = threading.RLock()
         self._rounds: deque[ProbeRound] = deque(maxlen=maxlen)
         self.retention_hours = max(0.1, float(retention_hours))
+        # 每次探测结果向前覆盖的时长（默认 5 分钟）
+        self.hold_seconds = max(30.0, float(hold_seconds))
         self._persist = persist
         self._persist_path = persist_path if persist_path is not None else health_history_path()
         self._dirty = False
@@ -85,6 +140,8 @@ class HealthHistory:
         *,
         ts: float | None = None,
         routing_mode: str = "good",
+        resolved_ips: list[str] | tuple[str, ...] | None = None,
+        answered_ips: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         now = ts if ts is not None else time.time()
         samples = [
@@ -94,7 +151,14 @@ class HealthHistory:
         mode = (routing_mode or "good").strip().lower() or "good"
         with self._lock:
             self._rounds.append(
-                ProbeRound(ts=now, hostname=hostname, samples=samples, routing_mode=mode)
+                ProbeRound(
+                    ts=now,
+                    hostname=hostname,
+                    samples=samples,
+                    routing_mode=mode,
+                    resolved_ips=list(resolved_ips or ()),
+                    answered_ips=list(answered_ips or ()),
+                )
             )
             self._prune_locked(now)
             self._dirty = True
@@ -162,8 +226,16 @@ class HealthHistory:
                     ProbeSample(ts=t, hostname=hostname, ip=ip, ok=ok, connect_ms=ms)
                     for ip, ok, ms in results
                 ]
+                answered = [ip for ip, ok, _ in results if ok] or [ip for ip, _, _ in results]
                 self._rounds.append(
-                    ProbeRound(ts=t, hostname=hostname, samples=samples, routing_mode=mode)
+                    ProbeRound(
+                        ts=t,
+                        hostname=hostname,
+                        samples=samples,
+                        routing_mode=mode,
+                        resolved_ips=[ip for ip, _, _ in results],
+                        answered_ips=answered,
+                    )
                 )
                 n += 1
                 t += step
@@ -184,6 +256,8 @@ class HealthHistory:
             "ts": rnd.ts,
             "hostname": rnd.hostname,
             "routing_mode": rnd.routing_mode,
+            "resolved_ips": list(rnd.resolved_ips),
+            "answered_ips": list(rnd.answered_ips),
             "samples": [
                 {
                     "ip": s.ip,
@@ -210,9 +284,33 @@ class HealthHistory:
                         connect_ms=s.get("connect_ms"),
                     )
                 )
-            return ProbeRound(ts=ts, hostname=hostname, samples=samples, routing_mode=mode)
+            resolved = [str(x) for x in (raw.get("resolved_ips") or [])]
+            answered = [str(x) for x in (raw.get("answered_ips") or [])]
+            rnd = ProbeRound(
+                ts=ts,
+                hostname=hostname,
+                samples=samples,
+                routing_mode=mode,
+                resolved_ips=resolved,
+                answered_ips=answered,
+            )
+            return self._ensure_round_fields(rnd)
         except (KeyError, TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _ensure_round_fields(rnd: ProbeRound) -> ProbeRound:
+        """旧落盘补齐 resolved_ips / answered_ips（尽力而为，不求完美）。"""
+        if not rnd.samples:
+            return rnd
+        if not rnd.resolved_ips:
+            # 旧数据分不清备选：整轮样本都当解析集
+            rnd.resolved_ips = [s.ip for s in rnd.samples]
+        if not rnd.answered_ips:
+            rnd.answered_ips = list(
+                picked_ips_for_mode(rnd.samples, rnd.routing_mode)
+            )
+        return rnd
 
     def _load_locked(self) -> None:
         path = self._persist_path
@@ -235,6 +333,9 @@ class HealthHistory:
         self._rounds.clear()
         self._rounds.extend(loaded)
         self._prune_locked(time.time())
+        # 读入即按新格式写回，方便下次与对外一致
+        self._dirty = True
+        self._save_locked()
 
     def _save_locked(self) -> None:
         if not self._persist:
@@ -260,8 +361,11 @@ class HealthHistory:
         hours: float | None = None,
         target_buckets: int = 90,
         probe_interval: float = 30.0,
+        hold_seconds: float | None = None,
     ) -> dict[str, Any]:
+        del target_buckets, probe_interval  # 旧分桶参数，改由 hold 覆盖
         window_h = self.retention_hours if hours is None else max(0.1, float(hours))
+        hold_s = self.hold_seconds if hold_seconds is None else max(30.0, float(hold_seconds))
         cutoff = time.time() - window_h * 3600
         with self._lock:
             removed = self._prune_locked(time.time())
@@ -273,6 +377,7 @@ class HealthHistory:
             return {
                 "hours": window_h,
                 "retention_hours": self.retention_hours,
+                "hold_seconds": hold_s,
                 "slot_count": 0,
                 "slot_seconds": None,
                 "hosts": {},
@@ -280,136 +385,83 @@ class HealthHistory:
                 "note": "暂无探测历史（已开启落盘，跑几轮探测后会留下近几小时条）",
             }
 
-        t0 = min(r.ts for r in rounds)
+        # 左边界再往前留出 hold，让第一探也能画出「向前覆盖」
         t1 = max(r.ts for r in rounds)
-        span = max(t1 - t0, 1.0)
-        min_slot = max(float(probe_interval) * 0.9, 20.0)
-        slot_seconds = max(span / max(target_buckets, 1), min_slot)
-        slot_count = max(1, int(span / slot_seconds) + 1)
+        t0 = min(r.ts for r in rounds) - hold_s
 
-        def slot_index(ts: float) -> int:
-            return min(slot_count - 1, max(0, int((ts - t0) / slot_seconds)))
-
-        host_slots: dict[str, list[dict[str, int]]] = defaultdict(
-            lambda: [{"ok": 0, "fail": 0} for _ in range(slot_count)]
+        # hostname -> list[(ts, state)]
+        accel_ev: dict[str, list[tuple[float, str]]] = defaultdict(list)
+        service_ev: dict[str, list[tuple[float, str]]] = defaultdict(list)
+        ip_ev: dict[str, dict[str, list[tuple[float, str]]]] = defaultdict(
+            lambda: defaultdict(list)
         )
-        ip_slots: dict[str, dict[str, list[dict[str, int]]]] = defaultdict(
-            lambda: defaultdict(lambda: [{"ok": 0, "fail": 0} for _ in range(slot_count)])
-        )
-        # 加速效果：只统计「当时模式挑中的 IP」探测
-        accel_slots: dict[str, list[dict[str, int]]] = defaultdict(
-            lambda: [{"ok": 0, "fail": 0} for _ in range(slot_count)]
-        )
+        # 最近一轮解析集，用于标注「当前是否仍在 DNS」
+        latest_resolved: dict[str, set[str]] = defaultdict(set)
+        latest_ts: dict[str, float] = {}
 
         for rnd in rounds:
-            i = slot_index(rnd.ts)
-            hcell = host_slots[rnd.hostname][i]
+            host = rnd.hostname
+            if host not in latest_ts or rnd.ts >= latest_ts[host]:
+                latest_ts[host] = rnd.ts
+                latest_resolved[host] = set(rnd.resolved_ips) if rnd.resolved_ips else {
+                    s.ip for s in rnd.samples
+                }
+
+            resolved_set = set(rnd.resolved_ips) if rnd.resolved_ips else None
+            ok_n = fail_n = 0
             for s in rnd.samples:
-                cell = ip_slots[rnd.hostname][s.ip][i]
+                ip_ev[host][s.ip].append((rnd.ts, "ok" if s.ok else "bad"))
+                if resolved_set is not None and s.ip not in resolved_set:
+                    continue
                 if s.ok:
-                    cell["ok"] += 1
-                    hcell["ok"] += 1
+                    ok_n += 1
                 else:
-                    cell["fail"] += 1
-                    hcell["fail"] += 1
+                    fail_n += 1
+            if ok_n or fail_n:
+                if fail_n == 0:
+                    service_ev[host].append((rnd.ts, "ok"))
+                elif ok_n == 0:
+                    service_ev[host].append((rnd.ts, "bad"))
+                else:
+                    service_ev[host].append((rnd.ts, "mixed"))
 
-            picked = set(picked_ips_for_mode(rnd.samples, rnd.routing_mode))
-            acell = accel_slots[rnd.hostname][i]
-            if not picked:
-                # 拉闸但无可返回的坏 IP → 视为不可达
-                acell["fail"] += 1
+            # 加速效果：每轮只可能 ok 或 bad（有可用下发=绿，否则红），禁止 mixed
+            picked = list(rnd.answered_ips) if rnd.answered_ips else list(
+                picked_ips_for_mode(rnd.samples, rnd.routing_mode)
+            )
+            by_ip = {s.ip: s for s in rnd.samples}
+            if picked and all((by_ip[ip].ok if ip in by_ip else False) for ip in picked):
+                accel_ev[host].append((rnd.ts, "ok"))
             else:
-                for s in rnd.samples:
-                    if s.ip not in picked:
-                        continue
-                    if s.ok:
-                        acell["ok"] += 1
-                    else:
-                        acell["fail"] += 1
-
-        def paint_service_state(ok: int, fail: int) -> tuple[str, str]:
-            if ok == 0 and fail == 0:
-                return "empty", "无数据"
-            if fail == 0:
-                return "ok", "健康"
-            if ok == 0:
-                return "bad", "不可达"
-            return "mixed", "有红有绿"
-
-        def paint_ip_state(ok: int, fail: int) -> tuple[str, str]:
-            if ok == 0 and fail == 0:
-                return "empty", "无数据"
-            if fail == 0:
-                return "ok", "健康"
-            if ok == 0:
-                return "bad", "不可达"
-            if ok > fail:
-                return "ok", "健康"
-            return "bad", "不可达"
-
-        def segments_from_cells(
-            cells: list[dict[str, int]],
-            *,
-            occupied: set[int],
-            paint,
-        ) -> list[dict[str, Any]]:
-            segs: list[dict[str, Any]] = []
-            for i, c in enumerate(cells):
-                if i not in occupied:
-                    continue
-                state, label = paint(c["ok"], c["fail"])
-                if state == "empty":
-                    continue
-                segs.append(
-                    {
-                        "start": _utc_iso(t0 + i * slot_seconds),
-                        "end": _utc_iso(t0 + (i + 1) * slot_seconds),
-                        "state": state,
-                        "label": label,
-                        "count": 1,
-                        "ok": c["ok"],
-                        "fail": c["fail"],
-                    }
-                )
-            return segs
+                accel_ev[host].append((rnd.ts, "bad"))
 
         hosts_out: dict[str, Any] = {}
         for hostname in sorted(set(r.hostname for r in rounds)):
-            occupied = {
-                i
-                for i, c in enumerate(host_slots[hostname])
-                if c["ok"] or c["fail"]
-            }
-            # 加速格也可能只有「空挑选」的 fail
-            for i, c in enumerate(accel_slots[hostname]):
-                if c["ok"] or c["fail"]:
-                    occupied.add(i)
-            ips = sorted(ip_slots[hostname].keys())
+            resolved_now = latest_resolved.get(hostname) or set()
+            ips = sorted(ip_ev[hostname].keys())
+            # 加速效果事件只写 ok|bad；若条上出现 mixed，是上游数据/逻辑 bug，原样露出以便追查
+            accel_segs = hold_segments(
+                accel_ev[hostname], t0=t0, t1=t1, hold_s=hold_s
+            )
             hosts_out[hostname] = {
                 "accelerated": {
                     "label": "加速效果（按当时选路挑中的 IP 上色）",
-                    "slot_segments": segments_from_cells(
-                        accel_slots[hostname],
-                        occupied=occupied,
-                        paint=paint_service_state,
-                    ),
+                    "slot_segments": accel_segs,
                 },
                 "service": {
-                    "label": "服务可达性（上游全部 IP）",
-                    "slot_segments": segments_from_cells(
-                        host_slots[hostname],
-                        occupied=occupied,
-                        paint=paint_service_state,
+                    "label": "服务可达性（当时 DNS 解析集）",
+                    "slot_segments": hold_segments(
+                        service_ev[hostname], t0=t0, t1=t1, hold_s=hold_s
                     ),
                 },
                 "ips": [
                     {
                         "ip": ip,
                         "label": f"IP {ip}",
-                        "slot_segments": segments_from_cells(
-                            ip_slots[hostname][ip],
-                            occupied=occupied,
-                            paint=paint_ip_state,
+                        "in_dns": ip in resolved_now,
+                        "role": "dns" if ip in resolved_now else "candidate",
+                        "slot_segments": hold_segments(
+                            ip_ev[hostname][ip], t0=t0, t1=t1, hold_s=hold_s
                         ),
                     }
                     for ip in ips
@@ -419,8 +471,9 @@ class HealthHistory:
         return {
             "hours": window_h,
             "retention_hours": self.retention_hours,
-            "slot_count": slot_count,
-            "slot_seconds": round(slot_seconds, 1),
+            "hold_seconds": hold_s,
+            "slot_count": None,
+            "slot_seconds": hold_s,  # 兼容旧前端字段：表示向前覆盖秒数
             "from": _utc_iso(t0),
             "to": _utc_iso(t1),
             "round_count": len(rounds),
